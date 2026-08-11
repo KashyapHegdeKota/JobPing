@@ -1,0 +1,1 @@
+"""JobPing application package."""
