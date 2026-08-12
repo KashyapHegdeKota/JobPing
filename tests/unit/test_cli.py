@@ -54,6 +54,8 @@ def test_run_simplify_parser_passes_options_and_prints_summary(monkeypatch: Monk
         "job_type": JobType.NEW_GRAD,
         "redis_url": "redis://cache:6379/2",
         "github_token": None,
+        "full_sync": False,
+        "database_url": None,
     }
 
 

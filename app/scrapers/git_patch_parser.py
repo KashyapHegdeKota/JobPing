@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from enum import StrEnum
@@ -9,6 +10,7 @@ from enum import StrEnum
 from app.scrapers.github_client import GitHubFilePatch
 
 _DIFF_FILE_HEADER = re.compile(r"^(?:\+\+\+|---)\s")
+_LOGGER = logging.getLogger(__name__)
 
 
 class ChangeKind(StrEnum):
@@ -60,8 +62,10 @@ class GitPatchParser:
             if _DIFF_FILE_HEADER.match(line):
                 continue
             if line.startswith("+"):
+                _LOGGER.debug("git.patch.added", extra={"patch_line": line})
                 changed.append(ChangedLine(ChangeKind.ADDED, line[1:]))
             elif line.startswith("-"):
+                _LOGGER.debug("git.patch.removed", extra={"patch_line": line})
                 changed.append(ChangedLine(ChangeKind.REMOVED, line[1:]))
         return ParsedPatch(filename=filename, lines=tuple(changed))
 

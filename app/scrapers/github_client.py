@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -75,6 +76,15 @@ class GitHubCommitDetail:
     html_url: str
     authored_at: datetime | None
     files: tuple[GitHubFilePatch, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class GitHubFileContent:
+    """Decoded repository file contents and blob identity."""
+
+    path: str
+    sha: str
+    text: str
 
 
 class GitHubClient:
@@ -171,6 +181,27 @@ class GitHubClient:
             authored_at=summary.authored_at,
             files=files,
         )
+
+    async def get_file_text(
+        self, owner: str, repo: str, path: str, *, ref: str | None = None
+    ) -> GitHubFileContent:
+        """Fetch and decode a UTF-8 repository file through the contents API."""
+        params = {"ref": ref} if ref else None
+        payload = await self._get_json(f"/repos/{owner}/{repo}/contents/{path}", params=params)
+        if not isinstance(payload, dict):
+            raise GitHubClientError("GitHub returned invalid file contents")
+        try:
+            encoded = payload["content"]
+            sha = str(payload["sha"])
+        except KeyError as exc:
+            raise GitHubClientError("GitHub file content is missing metadata") from exc
+        if not isinstance(encoded, str) or payload.get("encoding") != "base64":
+            raise GitHubClientError("GitHub returned an unsupported file encoding")
+        try:
+            text = base64.b64decode(encoded, validate=False).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise GitHubClientError("GitHub returned invalid file content") from exc
+        return GitHubFileContent(path=path, sha=sha, text=text)
 
     async def aclose(self) -> None:
         """Close the underlying client only when this instance created it."""

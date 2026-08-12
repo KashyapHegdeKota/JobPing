@@ -3,16 +3,31 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import selectors
+from collections.abc import Awaitable
 from typing import Annotated
 
 import typer
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.db.repository import DatabaseRepository
 from app.pipelines.simplify_pipeline import PipelineResult, SimplifyPipeline
 from app.schemas.job import JobType
 from app.scrapers.github_client import GitHubClient
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 
 app = typer.Typer(help="Run JobPing ingestion tools.", no_args_is_help=True)
+
+
+def _asyncio_run[T](awaitable: Awaitable[T]) -> T:
+    """Run async CLI work on a psycopg-compatible Windows selector loop."""
+    if os.name == "nt":
+        return asyncio.run(
+            awaitable,
+            loop_factory=lambda: asyncio.SelectorEventLoop(selectors.SelectSelector()),
+        )
+    return asyncio.run(awaitable)
 
 
 @app.callback()
@@ -55,6 +70,8 @@ async def _process_commits(
     job_type: JobType,
     redis_url: str,
     github_token: str | None,
+    full_sync: bool = False,
+    database_url: str | None = None,
 ) -> tuple[PipelineResult, ...]:
     """Process one explicit commit or a bounded batch of recent commits."""
     async with GitHubClient(token=github_token) as github:
@@ -66,12 +83,37 @@ async def _process_commits(
                 job_type=job_type,
                 target_readme_paths={target_readme},
             )
-            if commit_sha:
-                refs = (commit_sha,)
+            if full_sync:
+                results = (
+                    await pipeline.process_full_sync(
+                        owner, repo, path=target_readme, ref=commit_sha
+                    ),
+                )
             else:
-                commits = await github.list_commits(owner, repo, per_page=limit)
-                refs = tuple(commit.sha for commit in commits)
-            return tuple([await pipeline.process_commit(owner, repo, ref) for ref in refs])
+                if commit_sha:
+                    refs = (commit_sha,)
+                else:
+                    commits = await github.list_commits(owner, repo, per_page=limit)
+                    refs = tuple(commit.sha for commit in commits)
+                results = tuple([await pipeline.process_commit(owner, repo, ref) for ref in refs])
+            if database_url:
+                await _persist_results(results, database_url)
+            return results
+
+
+async def _persist_results(results: tuple[PipelineResult, ...], database_url: str) -> None:
+    """Persist parsed jobs, including NO_OP rows during cache/database recovery."""
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions() as session, session.begin():
+            repository = DatabaseRepository(session)
+            for result in results:
+                for state in DeduplicationState:
+                    for item in result.categorized(state):
+                        await repository.save_job_posting(item.job)
+    finally:
+        await engine.dispose()
 
 
 def _summary(result: PipelineResult) -> str:
@@ -124,6 +166,10 @@ def run_simplify_parser(
         int,
         typer.Option(min=1, max=100, help="Recent commits to scan when no SHA is given."),
     ] = 1,
+    full_sync: Annotated[
+        bool,
+        typer.Option(help="Seed from the entire README instead of commit diffs."),
+    ] = False,
     target_readme: Annotated[
         str, typer.Option(envvar="TARGET_README", help="Markdown path to inspect.")
     ] = "README.md",
@@ -140,10 +186,14 @@ def run_simplify_parser(
         str | None,
         typer.Option(envvar="GITHUB_TOKEN", help="Optional GitHub API token.", hidden=True),
     ] = None,
+    database_url: Annotated[
+        str | None,
+        typer.Option(envvar="DATABASE_URL", help="Async SQLAlchemy database URL."),
+    ] = None,
 ) -> None:
     """Fetch and classify one or more Simplify repository commits."""
     try:
-        results = asyncio.run(
+        results = _asyncio_run(
             _process_commits(
                 owner=owner,
                 repo=repo,
@@ -154,6 +204,8 @@ def run_simplify_parser(
                 job_type=job_type,
                 redis_url=redis_url,
                 github_token=github_token,
+                full_sync=full_sync,
+                database_url=database_url or os.environ.get("DATABASE_URL"),
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):

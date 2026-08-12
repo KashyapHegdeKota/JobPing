@@ -8,7 +8,11 @@ from pydantic import ValidationError
 
 from app.schemas.job import JobType, NormalizedJob, RawJobPayload
 from app.scrapers.git_patch_parser import ChangedLine, ChangeKind, GitPatchParser
-from app.scrapers.github_client import GitHubClient, GitHubCommitDetail
+from app.scrapers.github_client import (
+    GitHubClient,
+    GitHubCommitDetail,
+    GitHubFilePatch,
+)
 from app.scrapers.markdown_parser import parse_markdown_table_row
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 from app.services.hasher import generate_base_hash, generate_content_hash
@@ -83,6 +87,7 @@ class SimplifyPipeline:
         """Process an already-fetched commit detail without external persistence."""
         result = PipelineResult(commit_sha=detail.sha)
         candidates: list[tuple[RawJobPayload, ChangeKind, str]] = []
+        last_company_by_file: dict[str, str] = {}
         for parsed_patch in GitPatchParser.parse_files(
             detail.files, target_readme_paths=self._targets
         ):
@@ -102,6 +107,14 @@ class SimplifyPipeline:
                             RejectedRow(filename, line.content, line.kind, "not a valid job row")
                         )
                     continue
+                company = (raw.company or "").strip()
+                if company == "↳":
+                    inherited = last_company_by_file.get(filename)
+                    if inherited is None:
+                        continue
+                    raw = raw.model_copy(update={"company": inherited})
+                else:
+                    last_company_by_file[filename] = company
                 candidates.append((raw, line.kind, filename))
 
         added_identities = {
@@ -145,6 +158,30 @@ class SimplifyPipeline:
             item = PipelineItem(state, job, raw, detail.sha, detail.html_url, filename, kind)
             result.items[state].append(item)
         return result
+
+    async def process_full_sync(
+        self, owner: str, repo: str, *, path: str = "README.md", ref: str | None = None
+    ) -> PipelineResult:
+        """Classify every job row in the current README for initial database seeding."""
+        source = await self._github.get_file_text(owner, repo, path, ref=ref)
+        synthetic_patch = "\n".join(f"+{line}" for line in source.text.splitlines())
+        detail = GitHubCommitDetail(
+            sha=source.sha,
+            message="full README synchronization",
+            html_url=f"https://github.com/{owner}/{repo}/blob/{ref or 'HEAD'}/{path}",
+            authored_at=None,
+            files=(
+                GitHubFilePatch(
+                    filename=path,
+                    status="modified",
+                    additions=len(source.text.splitlines()),
+                    deletions=0,
+                    changes=len(source.text.splitlines()),
+                    patch=synthetic_patch,
+                ),
+            ),
+        )
+        return await self.process_detail(detail)
 
 
 def _coalesce_html_rows(lines: tuple[ChangedLine, ...]) -> tuple[ChangedLine, ...]:

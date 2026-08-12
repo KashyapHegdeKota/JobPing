@@ -23,6 +23,7 @@ _MARKDOWN_MARKUP = re.compile(r"(?<!\\)[*_`]")
 _STRIKE_MARKER = re.compile(r"~~")
 _BREAK_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
 _LOCATION_SEPARATOR = re.compile(r"\s*(?:[•·]|\n+)\s*")
+_COMPANY_BADGE = re.compile(r"^[\s🔥⭐🆕]+")
 _CLOSED_STATUS = re.compile(r"^[\s*_`~]*(?:closed)[\s*_`~]*$", re.IGNORECASE)
 _HEADER_ALIASES = {
     "company": {"company", "employer"},
@@ -246,7 +247,7 @@ def parse_markdown_table_row(
         return None
 
     is_closed = _is_closed_row(cells, mapped)
-    company = _clean_status_artifacts(_plain_text(mapped["company"]))
+    company = _COMPANY_BADGE.sub("", _clean_status_artifacts(_plain_text(mapped["company"])))
     title = _clean_status_artifacts(_plain_text(mapped["title"]))
     location = _clean_status_artifacts(_plain_text(mapped["location"], location=True))
     apply_url = _extract_url(mapped["apply_url"])
