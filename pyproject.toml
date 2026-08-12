@@ -5,7 +5,7 @@ description = "Low-latency job aggregation and discovery engine for internships 
 authors = [{ name = "JobPing Contributors" }]
 readme = "README.md"
 requires-python = ">=3.12,<4.0"
-dependencies = ["sqlalchemy (>=2.0,<3.0)", "alembic (>=1.16,<2.0)", "psycopg[binary] (>=3.2,<4.0)", "pydantic (>=2.11,<3)", "redis (>=6.2,<7.0)", "httpx (>=0.28,<1.0)", "typer (>=0.16,<1.0)", "playwright (>=1.55,<2)", "playwright-stealth (>=2,<3)", "tenacity (>=9.1,<10)", "fake-useragent (>=2.2,<3)", "apscheduler (>=3.11,<4)", "fastapi (>=0.116,<1.0)", "uvicorn (>=0.35,<1.0)", "websockets (>=15,<16)"]
+dependencies = ["sqlalchemy (>=2.0,<3.0)", "alembic (>=1.16,<2.0)", "psycopg[binary] (>=3.2,<4.0)", "pydantic (>=2.11,<3)", "redis (>=6.2,<7.0)", "httpx (>=0.28,<1.0)", "typer (>=0.16,<1.0)", "playwright (>=1.55,<2)", "playwright-stealth (>=2,<3)", "tenacity (>=9.1,<10)", "fake-useragent (>=2.2,<3)", "apscheduler (>=3.11,<4)", "fastapi (>=0.116,<1.0)", "sse-starlette (>=3.0,<4.0)", "uvicorn[standard] (>=0.30,<1)", "websockets (>=13,<17)"]
 
 [tool.poetry]
 packages = [{ include = "app" }]
