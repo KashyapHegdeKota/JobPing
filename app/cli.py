@@ -91,7 +91,7 @@ async def _process_commits(
             if full_sync:
                 results = (
                     await pipeline.process_full_sync(
-                        owner, repo, path=target_readme, ref=commit_sha or "main"
+                        owner, repo, path=target_readme, ref=commit_sha or "dev"
                     ),
                 )
             else:
@@ -311,7 +311,7 @@ def run_simplify_full_sync(
             envvar="SIMPLIFY_FULL_SYNC_REF",
             help="Branch containing current files.",
         ),
-    ] = "main",
+    ] = "dev",
     target_readme: Annotated[
         list[str] | None,
         typer.Option(

@@ -135,7 +135,7 @@ def test_run_simplify_full_sync_fetches_targets_and_reports_bulk_insert(
     assert "Starting full sync" in result.stdout
     assert "Bulk upsert complete: parsed=0 persisted=481" in result.stdout
     assert captured["target_readmes"] == ("README.md", "README-Off-Season.md")
-    assert captured["ref"] == "main"
+    assert captured["ref"] == "dev"
 
 
 def test_run_simplify_full_sync_requires_database_url(monkeypatch: MonkeyPatch) -> None:
