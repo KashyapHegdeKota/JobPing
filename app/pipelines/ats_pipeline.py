@@ -6,10 +6,8 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from pydantic import ValidationError
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import JobPosting
 from app.db.repository import DatabaseRepository
 from app.schemas.job import JobType, NormalizedJob, RawJobPayload
 from app.scrapers.base import BaseScraper
@@ -99,6 +97,7 @@ class ATSPipeline:
         """Run each scraper and persist non-no-op classifications."""
         result = ATSPipelineResult()
         seen: set[str] = set()
+        pending: list[NormalizedJob] = []
         for scraper in self._scrapers:
             try:
                 rows = await scraper.run()
@@ -124,26 +123,16 @@ class ATSPipeline:
                     )
                     continue
                 seen.add(job.base_hash)
-                async with self._session.begin():
-                    previous = await self._session.scalar(
-                        select(JobPosting).where(JobPosting.base_hash == job.base_hash)
-                    )
-                    state = await self._deduplicator.classify_and_update(
-                        base_hash=job.base_hash,
-                        content_hash=job.content_hash,
-                        is_closed=job.is_closed,
-                    )
-                    if state is DeduplicationState.NO_OP:
-                        result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
-                        continue
-                    previous_state = self._database_state(previous)
-                    posting = await self._repository.save_job_posting(job)
-                    new_state = "CLOSED" if job.is_closed else "OPEN"
-                    if previous_state != new_state:
-                        await self._repository.log_status_change(
-                            posting.id, previous_state, new_state
-                        )
+                state = await self._deduplicator.classify_and_update(
+                    base_hash=job.base_hash,
+                    content_hash=job.content_hash,
+                    is_closed=job.is_closed,
+                )
+                if state is not DeduplicationState.NO_OP:
+                    pending.append(job)
                 result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
+        if pending:
+            await self._repository.bulk_upsert_job_postings(pending)
         return result
 
     def _normalize(self, raw: RawJobPayload) -> NormalizedJob:
@@ -187,12 +176,6 @@ class ATSPipeline:
         if value is None:
             return False
         raise ValueError("is_closed must be a recognizable boolean value")
-
-    @staticmethod
-    def _database_state(posting: JobPosting | None) -> str | None:
-        if posting is None:
-            return None
-        return "CLOSED" if posting.is_closed else "OPEN"
 
 
 __all__ = [

@@ -85,6 +85,41 @@ async def test_unchanged_job_does_not_advance_updated_at(session: AsyncSession) 
     assert same_job.updated_at == previous_updated_at
 
 
+async def test_bulk_upsert_persists_multiple_jobs_and_state_transitions(
+    session: AsyncSession,
+) -> None:
+    repository = DatabaseRepository(session)
+    second = make_job(
+        title="Data Science Intern",
+        base_hash="c" * 64,
+        content_hash="d" * 64,
+        apply_url="https://example.com/jobs/2",
+    )
+
+    inserted = await repository.bulk_upsert_job_postings([make_job(), second])
+    updated = await repository.bulk_upsert_job_postings(
+        [make_job(content_hash="e" * 64, location="Remote", is_closed=True), second]
+    )
+
+    assert [posting.base_hash for posting in inserted] == ["a" * 64, "c" * 64]
+    assert updated[0].location == "Remote"
+    assert updated[0].is_closed is True
+    assert await session.scalar(select(func.count()).select_from(Company)) == 1
+    assert await session.scalar(select(func.count()).select_from(JobPosting)) == 2
+    logs = (await session.scalars(select(StatusLog).order_by(StatusLog.id))).all()
+    assert [(log.previous_state, log.new_state) for log in logs] == [
+        (None, "OPEN"),
+        (None, "OPEN"),
+        ("OPEN", "CLOSED"),
+    ]
+
+
+async def test_bulk_upsert_rejects_duplicate_identities(session: AsyncSession) -> None:
+    repository = DatabaseRepository(session)
+    with pytest.raises(ValueError, match="unique base hashes"):
+        await repository.bulk_upsert_job_postings([make_job(), make_job()])
+
+
 async def test_status_log_records_only_actual_transition(session: AsyncSession) -> None:
     repository = DatabaseRepository(session)
     job = await repository.save_job_posting(make_job())
