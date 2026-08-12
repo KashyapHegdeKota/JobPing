@@ -7,6 +7,7 @@ import re
 from collections.abc import Sequence
 
 from app.schemas.job import RawJobPayload
+from app.scrapers.git_patch_parser import ChangedLine, ChangeKind
 
 _SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _HTML_TAG = re.compile(r"<[^<>]*>")
@@ -33,6 +34,61 @@ _HEADER_ALIASES = {
     "date": {"date", "date posted", "posted", "posting date"},
 }
 _DEFAULT_COLUMNS = ("company", "title", "location", "apply_url", "date")
+
+
+def coalesce_html_table_rows(lines: Sequence[ChangedLine]) -> tuple[ChangedLine, ...]:
+    """Join multi-line HTML rows while preserving incomplete fragments verbatim."""
+    output: list[ChangedLine] = []
+    buffered: list[str] = []
+    buffered_kind: ChangeKind | None = None
+    for line in lines:
+        content = line.content.strip().casefold()
+        if buffered:
+            if line.kind is buffered_kind:
+                buffered.append(line.content)
+                if "</tr>" in content:
+                    output.append(ChangedLine(line.kind, "\n".join(buffered)))
+                    buffered = []
+                    buffered_kind = None
+                continue
+            output.extend(ChangedLine(buffered_kind, item) for item in buffered)
+            buffered = []
+            buffered_kind = None
+        if ("<tr" in content or "<td" in content) and "</tr>" not in content:
+            buffered = [line.content]
+            buffered_kind = line.kind
+        else:
+            output.append(line)
+    if buffered and buffered_kind is not None:
+        output.extend(ChangedLine(buffered_kind, item) for item in buffered)
+    return tuple(output)
+
+
+class MarkdownTableParser:
+    """Stateful row parser that resolves Simplify continuation-company markers."""
+
+    def __init__(self, *, source: str = "github_markdown", source_id: str | None = None) -> None:
+        self._source = source
+        self._source_id = source_id
+        self._last_company: str | None = None
+
+    def parse(self, row: str, *, headers: Sequence[str] | None = None) -> RawJobPayload | None:
+        """Parse a row and inherit the preceding company for a ``↳`` marker."""
+        raw = parse_markdown_table_row(
+            row,
+            headers=headers,
+            source=self._source,
+            source_id=self._source_id,
+        )
+        if raw is None:
+            return None
+        company = (raw.company or "").strip()
+        if company == "↳":
+            if self._last_company is None:
+                return None
+            return raw.model_copy(update={"company": self._last_company})
+        self._last_company = company
+        return raw
 
 
 def _split_row(row: str) -> list[str]:

@@ -1,6 +1,51 @@
 """Tests for Simplify-style Markdown table row parsing."""
 
-from app.scrapers.markdown_parser import parse_markdown_table_row
+from app.scrapers.git_patch_parser import ChangedLine, ChangeKind
+from app.scrapers.markdown_parser import (
+    MarkdownTableParser,
+    coalesce_html_table_rows,
+    parse_markdown_table_row,
+)
+
+
+def test_stateful_parser_resolves_continuation_company_marker() -> None:
+    parser = MarkdownTableParser(source="simplify", source_id="commit:file")
+
+    first = parser.parse(
+        "| Acme | Software Intern | Remote | [Apply](https://acme.test/one) | Today |"
+    )
+    continuation = parser.parse(
+        "| ↳ | Data Intern | Boston | [Apply](https://acme.test/two) | Today |"
+    )
+
+    assert first is not None
+    assert continuation is not None
+    assert continuation.company == "Acme"
+    assert continuation.source_id == "commit:file"
+
+
+def test_stateful_parser_rejects_orphan_continuation_marker() -> None:
+    parsed = MarkdownTableParser().parse(
+        "| ↳ | Data Intern | Boston | [Apply](https://acme.test/two) | Today |"
+    )
+
+    assert parsed is None
+
+
+def test_coalesces_multiline_html_rows_without_crossing_change_kinds() -> None:
+    lines = (
+        ChangedLine(ChangeKind.ADDED, "<tr><td>Acme</td>"),
+        ChangedLine(ChangeKind.ADDED, "<td>Intern</td></tr>"),
+        ChangedLine(ChangeKind.REMOVED, "<tr><td>Old</td>"),
+        ChangedLine(ChangeKind.ADDED, "| Acme | Role | Remote | [Apply](https://a.test) |"),
+    )
+
+    coalesced = coalesce_html_table_rows(lines)
+
+    assert coalesced[0] == ChangedLine(
+        ChangeKind.ADDED, "<tr><td>Acme</td>\n<td>Intern</td></tr>"
+    )
+    assert coalesced[1:] == lines[2:]
 
 
 def test_parses_generated_multiline_html_table_row() -> None:

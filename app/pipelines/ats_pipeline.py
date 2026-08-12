@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 from pydantic import ValidationError
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import JobPosting
@@ -125,9 +124,7 @@ class ATSPipeline:
                     continue
                 seen.add(job.base_hash)
                 async with self._session.begin():
-                    previous = await self._session.scalar(
-                        select(JobPosting).where(JobPosting.base_hash == job.base_hash)
-                    )
+                    previous = await self._repository.get_job_posting_by_base_hash(job.base_hash)
                     state = await self._deduplicator.classify_and_update(
                         base_hash=job.base_hash,
                         content_hash=job.content_hash,
