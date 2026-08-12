@@ -306,7 +306,11 @@ def run_simplify_full_sync(
     ] = "Summer2026-Internships",
     ref: Annotated[
         str,
-        typer.Option("--ref", envvar="GITHUB_REF", help="Branch containing current files."),
+        typer.Option(
+            "--ref",
+            envvar="SIMPLIFY_FULL_SYNC_REF",
+            help="Branch containing current files.",
+        ),
     ] = "main",
     target_readme: Annotated[
         list[str] | None,

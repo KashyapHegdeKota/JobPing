@@ -128,6 +128,7 @@ def test_run_simplify_full_sync_fetches_targets_and_reports_bulk_insert(
             "--database-url",
             "sqlite+aiosqlite:///jobs.db",
         ],
+        env={"GITHUB_REF": "refs/pull/20/merge"},
     )
 
     assert result.exit_code == 0
