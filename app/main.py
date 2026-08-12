@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.api.v1.router import router as api_v1_router
+from app.api.v1.websocket_manager import manager as websocket_manager
+from app.events.consumer import RedisEventConsumer
 
 DEFAULT_DATABASE_URL = (
     "postgresql+psycopg://jobping:change-me-for-local-development@localhost:5432/jobping"
@@ -100,15 +102,25 @@ def create_app(
             engine, class_=AsyncSession, expire_on_commit=False
         )
         application.state.redis = redis
+        event_consumer = RedisEventConsumer(redis, websocket_manager)
+        application.state.redis_event_consumer = event_consumer
+        application.state.redis_event_listener_task = None
         try:
             if check_services:
                 async with engine.connect() as connection:
                     await connection.execute(text("SELECT 1"))
                 await redis.ping()
+            await event_consumer.start()
+            application.state.redis_event_listener_task = event_consumer.task
             yield
         finally:
-            await redis.aclose()
-            await engine.dispose()
+            try:
+                await event_consumer.stop()
+            finally:
+                try:
+                    await redis.aclose()
+                finally:
+                    await engine.dispose()
 
     application = FastAPI(
         title="JobPing API",

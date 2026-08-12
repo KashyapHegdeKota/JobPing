@@ -69,6 +69,11 @@ class RedisEventConsumer:
     def is_running(self) -> bool:
         return self._task is not None and not self._task.done()
 
+    @property
+    def task(self) -> asyncio.Task[None] | None:
+        """Return the owned listener task for lifecycle diagnostics."""
+        return self._task
+
     async def start(self) -> None:
         """Subscribe before returning, then run the listener in the background."""
         async with self._lifecycle_lock:
