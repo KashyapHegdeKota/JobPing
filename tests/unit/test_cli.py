@@ -97,6 +97,54 @@ def test_run_simplify_parser_validates_season_before_execution() -> None:
     assert "2026" in result.output
 
 
+def test_run_simplify_full_sync_fetches_targets_and_reports_bulk_insert(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_full_sync(
+        **kwargs: object,
+    ) -> tuple[tuple[PipelineResult, ...], int]:
+        captured.update(kwargs)
+        return (
+            (
+                PipelineResult(commit_sha="readme-sha"),
+                PipelineResult(commit_sha="off-season-sha"),
+            ),
+            481,
+        )
+
+    monkeypatch.setattr(cli, "_process_full_sync_files", fake_full_sync)
+    result = runner.invoke(
+        cli.app,
+        [
+            "run-simplify-full-sync",
+            "--repo",
+            "Summer2027-Internships",
+            "--target-readme",
+            "README.md",
+            "--target-readme",
+            "README-Off-Season.md",
+            "--database-url",
+            "sqlite+aiosqlite:///jobs.db",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "Starting full sync" in result.stdout
+    assert "Bulk upsert complete: parsed=0 persisted=481" in result.stdout
+    assert captured["target_readmes"] == ("README.md", "README-Off-Season.md")
+    assert captured["ref"] == "main"
+
+
+def test_run_simplify_full_sync_requires_database_url(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    result = runner.invoke(cli.app, ["run-simplify-full-sync"])
+
+    assert result.exit_code == 2
+    assert "DATABASE_URL is required" in result.output
+
+
 def test_audit_db_requires_database_url(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.delenv("DATABASE_URL", raising=False)
     result = runner.invoke(cli.app, ["audit-db"])

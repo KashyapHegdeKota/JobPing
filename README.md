@@ -56,6 +56,7 @@ deployed environment.
 | `GITHUB_REPO` | `Summer2026-Internships` | CLI | Target repository name. |
 | `GITHUB_REF` | `HEAD` | CLI | Commit SHA, tag, or branch to process. |
 | `TARGET_README` | `README.md` | CLI | Exact Markdown path inspected in the commit. |
+| `TARGET_READMES` | `README.md,README-Off-Season.md` | full-sync CLI | Comma-separated raw Markdown paths used when no repeatable `--target-readme` options are provided. |
 | `JOB_SEASON` | `2026` | CLI | Hiring season; accepted values are 2026 and 2027. |
 | `JOB_TYPE` | `internship` | CLI | Assigned category; accepted values are `internship` and `new_grad`. |
 
@@ -133,6 +134,21 @@ poetry run python -m app.cli run-simplify-parser \
 Use `--help` for the authoritative option list. The command prints counts for `NEW_ROLE`,
 `ROLE_UPDATED`, `ROLE_CLOSED`, `NO_OP`, and rejected rows. Redis state has a 90-day TTL, so
 reprocessing an unchanged role normally returns `NO_OP`.
+
+Bootstrap PostgreSQL directly from the current raw files on the repository's `main` branch:
+
+```shell
+poetry run python -m app.cli run-simplify-full-sync \
+  --repo Summer2026-Internships \
+  --target-readme README.md \
+  --target-readme README-Off-Season.md \
+  --database-url postgresql+psycopg://jobping:change-me-for-local-development@localhost:5432/jobping
+```
+
+This command bypasses commit patches, parses each complete file, and submits all unique jobs
+to one bulk-upsert persistence operation. It prints a per-file classification summary and the
+final parsed/persisted batch size. Omit a `--target-readme` value when that file does not exist
+in the selected repository.
 
 GitHub rejects exhausted unauthenticated requests with HTTP 403 or 429. Set `GITHUB_TOKEN`
 to a GitHub token when polling regularly; the client also reports rate-limit reset information

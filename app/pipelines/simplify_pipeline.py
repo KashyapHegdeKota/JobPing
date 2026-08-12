@@ -8,11 +8,10 @@ from pydantic import ValidationError
 
 from app.db.repository import DatabaseRepository
 from app.schemas.job import JobType, NormalizedJob, RawJobPayload
-from app.scrapers.git_patch_parser import ChangeKind, GitPatchParser
+from app.scrapers.git_patch_parser import ChangedLine, ChangeKind, GitPatchParser
 from app.scrapers.github_client import (
     GitHubClient,
     GitHubCommitDetail,
-    GitHubFilePatch,
 )
 from app.scrapers.markdown_parser import MarkdownTableParser, coalesce_html_table_rows
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
@@ -109,6 +108,18 @@ class SimplifyPipeline:
                     continue
                 candidates.append((raw, line.kind, filename))
 
+        await self._classify_candidates(result, candidates, detail.sha, detail.html_url)
+        return result
+
+    async def _classify_candidates(
+        self,
+        result: PipelineResult,
+        candidates: list[tuple[RawJobPayload, ChangeKind, str]],
+        source_sha: str,
+        source_url: str,
+    ) -> None:
+        """Normalize and classify parsed rows from either diffs or raw files."""
+
         added_identities = {
             generate_base_hash(raw.company or "", raw.title or "")
             for raw, kind, _ in candidates
@@ -147,38 +158,62 @@ class SimplifyPipeline:
             state = await self._deduplicator.classify_and_update(
                 base_hash=base_hash, content_hash=content_hash, is_closed=is_closed
             )
-            item = PipelineItem(state, job, raw, detail.sha, detail.html_url, filename, kind)
+            item = PipelineItem(state, job, raw, source_sha, source_url, filename, kind)
             result.items[state].append(item)
-        return result
 
     async def process_full_sync(
-        self, owner: str, repo: str, *, path: str = "README.md", ref: str | None = None
+        self, owner: str, repo: str, *, path: str = "README.md", ref: str = "main"
     ) -> PipelineResult:
-        """Classify every job row in the current README for initial database seeding."""
+        """Parse and classify the raw current file without commit-diff processing."""
         source = await self._github.get_file_text(owner, repo, path, ref=ref)
-        synthetic_patch = "\n".join(f"+{line}" for line in source.text.splitlines())
-        detail = GitHubCommitDetail(
-            sha=source.sha,
-            message="full README synchronization",
-            html_url=f"https://github.com/{owner}/{repo}/blob/{ref or 'HEAD'}/{path}",
-            authored_at=None,
-            files=(
-                GitHubFilePatch(
-                    filename=path,
-                    status="modified",
-                    additions=len(source.text.splitlines()),
-                    deletions=0,
-                    changes=len(source.text.splitlines()),
-                    patch=synthetic_patch,
-                ),
-            ),
+        result = PipelineResult(commit_sha=source.sha)
+        parser = MarkdownTableParser(source="simplify_github", source_id=f"{source.sha}:{path}")
+        candidates: list[tuple[RawJobPayload, ChangeKind, str]] = []
+        raw_lines = tuple(ChangedLine(ChangeKind.ADDED, line) for line in source.text.splitlines())
+        for line in coalesce_html_table_rows(raw_lines):
+            try:
+                raw = parser.parse(line.content)
+            except (ValidationError, ValueError) as exc:
+                result.rejected.append(RejectedRow(path, line.content, line.kind, str(exc)))
+                continue
+            if raw is None:
+                if line.content.lstrip().startswith("|"):
+                    result.rejected.append(
+                        RejectedRow(path, line.content, line.kind, "not a valid job row")
+                    )
+                continue
+            candidates.append((raw, line.kind, path))
+        await self._classify_candidates(
+            result,
+            candidates,
+            source.sha,
+            f"https://github.com/{owner}/{repo}/blob/{ref}/{path}",
         )
-        return await self.process_detail(detail)
+        return result
+
+    async def process_full_sync_files(
+        self,
+        owner: str,
+        repo: str,
+        paths: tuple[str, ...],
+        *,
+        ref: str = "main",
+    ) -> tuple[PipelineResult, ...]:
+        """Fetch and parse each current Markdown target directly from a branch."""
+        normalized_paths = tuple(dict.fromkeys(path.strip() for path in paths if path.strip()))
+        if not normalized_paths:
+            raise ValueError("at least one target Markdown path is required")
+        return tuple(
+            [
+                await self.process_full_sync(owner, repo, path=path, ref=ref)
+                for path in normalized_paths
+            ]
+        )
 
     @staticmethod
     async def persist_results(
         repository: DatabaseRepository, results: tuple[PipelineResult, ...]
-    ) -> None:
+    ) -> int:
         """Persist classified rows through the repository's batch fast path."""
         jobs = [
             item.job
@@ -190,4 +225,7 @@ class SimplifyPipeline:
         # the final observed state while retaining deterministic first-seen order.
         latest = {job.base_hash: job for job in jobs}
         ordered = list(dict.fromkeys(job.base_hash for job in jobs))
-        await repository.bulk_upsert_job_postings([latest[base_hash] for base_hash in ordered])
+        persisted = await repository.bulk_upsert_job_postings(
+            [latest[base_hash] for base_hash in ordered]
+        )
+        return len(persisted)

@@ -91,7 +91,7 @@ async def _process_commits(
             if full_sync:
                 results = (
                     await pipeline.process_full_sync(
-                        owner, repo, path=target_readme, ref=commit_sha
+                        owner, repo, path=target_readme, ref=commit_sha or "main"
                     ),
                 )
             else:
@@ -106,16 +106,43 @@ async def _process_commits(
             return results
 
 
-async def _persist_results(results: tuple[PipelineResult, ...], database_url: str) -> None:
+async def _persist_results(results: tuple[PipelineResult, ...], database_url: str) -> int:
     """Persist parsed jobs, including NO_OP rows during cache/database recovery."""
     engine = create_async_engine(database_url)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with sessions() as session, session.begin():
             repository = DatabaseRepository(session)
-            await SimplifyPipeline.persist_results(repository, results)
+            return await SimplifyPipeline.persist_results(repository, results)
     finally:
         await engine.dispose()
+
+
+async def _process_full_sync_files(
+    *,
+    owner: str,
+    repo: str,
+    ref: str,
+    target_readmes: tuple[str, ...],
+    season: int,
+    job_type: JobType,
+    redis_url: str,
+    github_token: str | None,
+    database_url: str,
+) -> tuple[tuple[PipelineResult, ...], int]:
+    """Fetch raw Markdown targets, classify them, and bulk-persist one batch."""
+    async with GitHubClient(token=github_token) as github:
+        async with JobDeduplicator.from_url(redis_url) as deduplicator:
+            pipeline = SimplifyPipeline(
+                github,
+                deduplicator,
+                season=season,
+                job_type=job_type,
+                target_readme_paths=set(target_readmes),
+            )
+            results = await pipeline.process_full_sync_files(owner, repo, target_readmes, ref=ref)
+            persisted = await _persist_results(results, database_url)
+            return results, persisted
 
 
 def _summary(result: PipelineResult) -> str:
@@ -267,6 +294,83 @@ def run_simplify_parser(
         typer.echo(_summary(result))
         for line in _job_lines(result):
             typer.echo(line)
+
+
+@app.command("run-simplify-full-sync")
+def run_simplify_full_sync(
+    owner: Annotated[
+        str, typer.Option(envvar="GITHUB_OWNER", help="GitHub repository owner.")
+    ] = "SimplifyJobs",
+    repo: Annotated[
+        str, typer.Option(envvar="GITHUB_REPO", help="GitHub repository name.")
+    ] = "Summer2026-Internships",
+    ref: Annotated[
+        str,
+        typer.Option("--ref", envvar="GITHUB_REF", help="Branch containing current files."),
+    ] = "main",
+    target_readme: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--target-readme",
+            help="Repeat for every Markdown file to seed (for example README-Off-Season.md).",
+        ),
+    ] = None,
+    season: Annotated[
+        int, typer.Option(min=2026, max=2027, envvar="JOB_SEASON", help="Hiring season.")
+    ] = 2026,
+    job_type: Annotated[
+        JobType, typer.Option(envvar="JOB_TYPE", help="Job category to assign.")
+    ] = JobType.INTERNSHIP,
+    redis_url: Annotated[
+        str, typer.Option(envvar="REDIS_URL", help="Redis connection URL.")
+    ] = "redis://localhost:6379/0",
+    github_token: Annotated[
+        str | None,
+        typer.Option(envvar="GITHUB_TOKEN", help="Optional GitHub API token.", hidden=True),
+    ] = None,
+    database_url: Annotated[
+        str | None, typer.Option(envvar="DATABASE_URL", help="Async SQLAlchemy database URL.")
+    ] = None,
+) -> None:
+    """Seed PostgreSQL from complete current Simplify Markdown files."""
+    resolved_database_url = database_url or os.environ.get("DATABASE_URL")
+    if not resolved_database_url:
+        typer.echo("DATABASE_URL is required for a full sync.", err=True)
+        raise typer.Exit(code=2)
+    env_targets = os.environ.get("TARGET_READMES") or os.environ.get("TARGET_README", "README.md")
+    targets = tuple(
+        target_readme or [item.strip() for item in env_targets.split(",") if item.strip()]
+    )
+    typer.echo(
+        f"Starting full sync from {owner}/{repo}@{ref}: "
+        f"{', '.join(_console_safe(path) for path in targets)}"
+    )
+    try:
+        results, persisted = _asyncio_run(
+            _process_full_sync_files(
+                owner=owner,
+                repo=repo,
+                ref=ref,
+                target_readmes=targets,
+                season=season,
+                job_type=job_type,
+                redis_url=redis_url,
+                github_token=github_token,
+                database_url=resolved_database_url,
+            )
+        )
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        typer.echo("Simplify full sync cancelled.", err=True)
+        raise typer.Exit(code=130) from None
+    except Exception as exc:
+        typer.echo(f"Simplify full sync failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    for target, result in zip(targets, results, strict=True):
+        typer.echo(f"{_console_safe(target)}: {_summary(result)}")
+    parsed = sum(
+        len(result.categorized(state)) for result in results for state in DeduplicationState
+    )
+    typer.echo(f"Bulk upsert complete: parsed={parsed} persisted={persisted}")
 
 
 async def _serve_scheduler(intervals: list[str]) -> None:

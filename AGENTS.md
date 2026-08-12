@@ -75,6 +75,7 @@ docker compose up -d
 poetry run alembic upgrade head
 poetry run python -m app.cli run-simplify-parser --limit 10
 poetry run python -m app.cli run-simplify-parser --full-sync
+poetry run python -m app.cli run-simplify-full-sync --target-readme README.md
 poetry run python -m app.cli start-scheduler --dry-run
 poetry run python -m app.cli audit-db
 poetry run ruff check .

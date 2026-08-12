@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from app.pipelines.simplify_pipeline import SimplifyPipeline
 from app.schemas.job import JobType
-from app.scrapers.github_client import GitHubCommitDetail, GitHubFilePatch
+from app.scrapers.github_client import GitHubCommitDetail, GitHubFileContent, GitHubFilePatch
 from app.services.deduplicator import DeduplicationState
 
 
@@ -137,3 +137,44 @@ async def test_dependency_errors_propagate() -> None:
     commit = detail("+" + row())
     with pytest.raises(RuntimeError, match="redis unavailable"):
         await pipeline(commit, BrokenDeduplicator()).process_detail(commit)
+
+
+@pytest.mark.asyncio
+async def test_full_sync_fetches_multiple_raw_files_without_commit_diffs() -> None:
+    class RawFileGitHub:
+        def __init__(self) -> None:
+            self.paths: list[tuple[str, str]] = []
+
+        async def get_file_text(
+            self, owner: str, repo: str, path: str, *, ref: str | None = None
+        ) -> GitHubFileContent:
+            del owner, repo
+            self.paths.append((path, ref or ""))
+            return GitHubFileContent(path, f"sha-{len(self.paths)}", row(title=path))
+
+        async def get_commit(self, *args: object, **kwargs: object) -> GitHubCommitDetail:
+            del args, kwargs
+            raise AssertionError("full sync must not request commit diffs")
+
+    github = RawFileGitHub()
+    dedupe = FakeDeduplicator([DeduplicationState.NEW_ROLE, DeduplicationState.NEW_ROLE])
+    pipe = SimplifyPipeline(  # type: ignore[arg-type]
+        github,
+        dedupe,
+        season=2026,
+        job_type=JobType.INTERNSHIP,
+        target_readme_paths={"README.md", "README-Off-Season.md"},
+    )
+
+    results = await pipe.process_full_sync_files(
+        "SimplifyJobs",
+        "Summer2026-Internships",
+        ("README.md", "README-Off-Season.md"),
+    )
+
+    assert github.paths == [("README.md", "main"), ("README-Off-Season.md", "main")]
+    assert [result.commit_sha for result in results] == ["sha-1", "sha-2"]
+    assert [result.categorized(DeduplicationState.NEW_ROLE)[0].filename for result in results] == [
+        "README.md",
+        "README-Off-Season.md",
+    ]
