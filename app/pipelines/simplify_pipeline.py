@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
+from app.db.repository import DatabaseRepository
 from app.schemas.job import JobType, NormalizedJob, RawJobPayload
 from app.scrapers.git_patch_parser import ChangeKind, GitPatchParser
 from app.scrapers.github_client import (
@@ -173,3 +174,49 @@ class SimplifyPipeline:
             ),
         )
         return await self.process_detail(detail)
+
+    @staticmethod
+    async def persist_results(
+        repository: DatabaseRepository, results: tuple[PipelineResult, ...]
+    ) -> None:
+        """Persist classified rows through the repository's batch fast path."""
+        jobs = [
+            item.job
+            for result in results
+            for state in DeduplicationState
+            for item in result.categorized(state)
+        ]
+        # A batch spanning commits can contain the same identity repeatedly. Keep
+        # the final observed state while retaining deterministic first-seen order.
+        latest = {job.base_hash: job for job in jobs}
+        ordered = list(dict.fromkeys(job.base_hash for job in jobs))
+        await repository.bulk_upsert_job_postings([latest[base_hash] for base_hash in ordered])
+
+
+def _coalesce_html_rows(lines: tuple[ChangedLine, ...]) -> tuple[ChangedLine, ...]:
+    """Join changed multi-line HTML table rows emitted by generated READMEs."""
+    output: list[ChangedLine] = []
+    buffered: list[str] = []
+    buffered_kind: ChangeKind | None = None
+    for line in lines:
+        content = line.content.strip()
+        if buffered:
+            if line.kind is buffered_kind:
+                buffered.append(line.content)
+                if "</tr>" in content.casefold():
+                    output.append(ChangedLine(line.kind, "\n".join(buffered)))
+                    buffered = []
+                    buffered_kind = None
+                continue
+            output.extend(ChangedLine(buffered_kind, item) for item in buffered)
+            buffered = []
+            buffered_kind = None
+        lowered = content.casefold()
+        if ("<tr" in lowered or "<td" in lowered) and "</tr>" not in lowered:
+            buffered = [line.content]
+            buffered_kind = line.kind
+        else:
+            output.append(line)
+    if buffered and buffered_kind is not None:
+        output.extend(ChangedLine(buffered_kind, item) for item in buffered)
+    return tuple(output)
