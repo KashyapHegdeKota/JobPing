@@ -25,12 +25,8 @@ async def get_system_stats(
         await session.execute(
             select(
                 func.count(JobPosting.id),
-                func.coalesce(
-                    func.sum(case((JobPosting.is_closed.is_(False), 1), else_=0)), 0
-                ),
-                func.coalesce(
-                    func.sum(case((JobPosting.is_closed.is_(True), 1), else_=0)), 0
-                ),
+                func.coalesce(func.sum(case((JobPosting.is_closed.is_(False), 1), else_=0)), 0),
+                func.coalesce(func.sum(case((JobPosting.is_closed.is_(True), 1), else_=0)), 0),
                 func.coalesce(
                     func.sum(case((JobPosting.job_type == JobType.INTERNSHIP, 1), else_=0)), 0
                 ),
