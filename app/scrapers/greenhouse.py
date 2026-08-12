@@ -10,6 +10,7 @@ from urllib.parse import quote, urlparse
 import httpx
 
 from app.schemas.job import RawJobPayload
+from app.scrapers.base import BaseScraper
 
 GREENHOUSE_API_URL = "https://boards-api.greenhouse.io/v1/boards"
 _WHITESPACE = re.compile(r"\s+")
@@ -27,7 +28,7 @@ class GreenhouseRateLimitError(GreenhouseError):
     """Greenhouse throttled the public board request."""
 
 
-class GreenhouseScraper:
+class GreenhouseScraper(BaseScraper):
     """Fetch jobs from one Greenhouse board and map them to ingestion payloads.
 
     Greenhouse's public jobs endpoint returns the complete active board in one
@@ -40,16 +41,14 @@ class GreenhouseScraper:
         client: httpx.AsyncClient | None = None,
         base_url: str = GREENHOUSE_API_URL,
         timeout: httpx.Timeout | float = 10.0,
+        company: str = "unconfigured",
     ) -> None:
-        self._owns_client = client is None
-        self._client = client or httpx.AsyncClient(timeout=timeout)
+        super().__init__(scraper_name="greenhouse", company=company, client=client, timeout=timeout)
         self._base_url = base_url.rstrip("/")
-        self._timeout = timeout
-        self._closed = False
 
-    async def fetch_jobs(self, company: str) -> tuple[RawJobPayload, ...]:
+    async def fetch_jobs(self, company: str | None = None) -> list[RawJobPayload]:
         """Return every valid active job from a public Greenhouse board."""
-        board_token = company.strip()
+        board_token = (company or self.company).strip()
         if not board_token:
             raise ValueError("company board token must be non-empty")
         if self._closed:
@@ -88,11 +87,11 @@ class GreenhouseScraper:
             mapped = self._map_job(board_token, item)
             if mapped is not None:
                 jobs.append(mapped)
-        return tuple(jobs)
+        return jobs
 
     async def scrape(self, company: str) -> tuple[RawJobPayload, ...]:
         """Base-scraper-compatible alias for fetching a board."""
-        return await self.fetch_jobs(company)
+        return tuple(await self.fetch_jobs(company))
 
     async def aclose(self) -> None:
         """Close the HTTP client only when this scraper created it."""
