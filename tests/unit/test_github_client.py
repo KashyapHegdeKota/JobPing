@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 
 import httpx
@@ -179,6 +180,44 @@ async def test_network_failure_is_mapped() -> None:
     async with httpx.AsyncClient(base_url="https://api.github.test", transport=transport) as http:
         with pytest.raises(GitHubClientError, match="request failed"):
             await GitHubClient(client=http).list_commits("acme", "jobs")
+
+
+@pytest.mark.asyncio
+async def test_transient_http_failure_is_retried_before_parsing() -> None:
+    attempts = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            return httpx.Response(503, request=request)
+        return httpx.Response(200, json=[commit_payload()], request=request)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(base_url="https://api.github.test", transport=transport) as http:
+        commits = await GitHubClient(client=http).list_commits("acme", "jobs")
+
+    assert attempts == 3
+    assert commits[0].sha == "abc123"
+
+
+@pytest.mark.asyncio
+async def test_invalid_json_is_logged_and_raised_without_response_body(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret_body = "malformed-secret-payload"
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(200, text=secret_body, request=request)
+    )
+    caplog.set_level(logging.ERROR, logger="app.scrapers.github_client")
+
+    async with httpx.AsyncClient(base_url="https://api.github.test", transport=transport) as http:
+        with pytest.raises(GitHubClientError, match="invalid JSON"):
+            await GitHubClient(client=http, token="super-secret-token").list_commits("acme", "jobs")
+
+    assert "error_type=JSONDecodeError" in caplog.text
+    assert secret_body not in caplog.text
+    assert "super-secret-token" not in caplog.text
 
 
 @pytest.mark.asyncio

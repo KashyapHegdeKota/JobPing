@@ -26,6 +26,8 @@ def is_transient(exc: BaseException) -> bool:
         return True
     if isinstance(exc, httpx.HTTPStatusError):
         return exc.response.status_code in _TRANSIENT_STATUS
+    if getattr(exc, "retryable", False) is True:
+        return True
     status = getattr(exc, "status_code", None)
     return isinstance(status, int) and status in _TRANSIENT_STATUS
 
