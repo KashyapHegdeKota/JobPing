@@ -102,3 +102,51 @@ def test_audit_db_requires_database_url(monkeypatch: MonkeyPatch) -> None:
     result = runner.invoke(cli.app, ["audit-db"])
     assert result.exit_code == 2
     assert "DATABASE_URL is required" in result.output
+
+
+def test_run_server_passes_configuration_to_uvicorn(monkeypatch: MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_run(app: str, **kwargs: object) -> None:
+        captured["app"] = app
+        captured.update(kwargs)
+
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+    result = runner.invoke(
+        cli.app,
+        [
+            "run-server",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            "9000",
+            "--reload",
+            "--log-level",
+            "DEBUG",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert captured == {
+        "app": "app.main:app",
+        "host": "0.0.0.0",
+        "port": 9000,
+        "reload": True,
+        "log_level": "debug",
+    }
+
+
+def test_run_server_rejects_invalid_log_level(monkeypatch: MonkeyPatch) -> None:
+    called = False
+
+    def fake_run(app: str, **kwargs: object) -> None:
+        nonlocal called
+        del app, kwargs
+        called = True
+
+    monkeypatch.setattr(cli.uvicorn, "run", fake_run)
+    result = runner.invoke(cli.app, ["run-server", "--log-level", "verbose"])
+
+    assert result.exit_code == 2
+    assert "Invalid log level: verbose" in result.output
+    assert called is False

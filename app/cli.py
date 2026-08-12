@@ -11,6 +11,7 @@ from datetime import timedelta
 from typing import Annotated
 
 import typer
+import uvicorn
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.repository import DatabaseRepository
@@ -319,6 +320,43 @@ def start_scheduler(
     except ValueError as exc:
         typer.echo(f"Scheduler configuration failed: {exc}", err=True)
         raise typer.Exit(code=2) from None
+
+
+@app.command("run-server")
+def run_server(
+    host: Annotated[
+        str,
+        typer.Option(envvar="API_HOST", help="Interface on which the API server listens."),
+    ] = "127.0.0.1",
+    port: Annotated[
+        int,
+        typer.Option(min=1, max=65535, envvar="API_PORT", help="API server TCP port."),
+    ] = 8000,
+    reload: Annotated[
+        bool,
+        typer.Option("--reload/--no-reload", help="Reload the server when source files change."),
+    ] = False,
+    log_level: Annotated[
+        str,
+        typer.Option(
+            envvar="API_LOG_LEVEL",
+            help="Uvicorn log level (critical, error, warning, info, debug, or trace).",
+        ),
+    ] = "info",
+) -> None:
+    """Run the JobPing FastAPI application with Uvicorn."""
+    normalized_log_level = log_level.casefold()
+    allowed_log_levels = {"critical", "error", "warning", "info", "debug", "trace"}
+    if normalized_log_level not in allowed_log_levels:
+        typer.echo(f"Invalid log level: {log_level}", err=True)
+        raise typer.Exit(code=2)
+    uvicorn.run(
+        "app.main:app",
+        host=host,
+        port=port,
+        reload=reload,
+        log_level=normalized_log_level,
+    )
 
 
 def main() -> None:

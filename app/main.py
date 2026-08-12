@@ -17,6 +17,8 @@ from sqlalchemy.ext.asyncio import (
     create_async_engine,
 )
 
+from app.api.v1.router import router as api_v1_router
+
 DEFAULT_DATABASE_URL = (
     "postgresql+psycopg://jobping:change-me-for-local-development@localhost:5432/jobping"
 )
@@ -122,6 +124,7 @@ def create_app(
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    application.include_router(api_v1_router)
     return application
 
 
