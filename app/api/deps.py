@@ -21,7 +21,7 @@ async def get_db(request: Request) -> AsyncIterator[AsyncSession]:
     the transaction back before closing the request-scoped session.
     """
     sessionmaker: async_sessionmaker[AsyncSession] | None = getattr(
-        request.app.state, "sessionmaker", None
+        request.app.state, "db_sessionmaker", None
     )
     if sessionmaker is None or not callable(sessionmaker):
         raise _unavailable(

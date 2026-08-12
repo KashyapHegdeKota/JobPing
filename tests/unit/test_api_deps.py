@@ -73,7 +73,7 @@ def make_request(**state: object) -> Request:
 
 async def test_get_db_commits_and_closes_after_success() -> None:
     session = FakeSession()
-    dependency = get_db(make_request(sessionmaker=FakeSessionmaker(session)))
+    dependency = get_db(make_request(db_sessionmaker=FakeSessionmaker(session)))
 
     assert await anext(dependency) is session
     with pytest.raises(StopAsyncIteration):
@@ -87,7 +87,7 @@ async def test_get_db_commits_and_closes_after_success() -> None:
 
 async def test_get_db_rolls_back_closes_and_preserves_route_exception() -> None:
     session = FakeSession()
-    dependency = get_db(make_request(sessionmaker=FakeSessionmaker(session)))
+    dependency = get_db(make_request(db_sessionmaker=FakeSessionmaker(session)))
     await anext(dependency)
 
     with pytest.raises(RuntimeError, match="route failed"):
@@ -100,7 +100,7 @@ async def test_get_db_rolls_back_closes_and_preserves_route_exception() -> None:
 
 async def test_get_db_preserves_cancellation_and_cleans_up() -> None:
     session = FakeSession()
-    dependency = get_db(make_request(sessionmaker=FakeSessionmaker(session)))
+    dependency = get_db(make_request(db_sessionmaker=FakeSessionmaker(session)))
     await anext(dependency)
 
     with pytest.raises(asyncio.CancelledError):
