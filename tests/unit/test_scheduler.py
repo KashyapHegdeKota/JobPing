@@ -10,6 +10,7 @@ from unittest.mock import Mock
 import pytest
 from app.cli import app
 from app.scheduler import PollTarget, SchedulerDaemon, parse_intervals
+from click import unstyle
 from typer.testing import CliRunner
 
 
@@ -95,7 +96,7 @@ def test_cli_help_and_dry_run_do_not_start_daemon() -> None:
     runner = CliRunner()
     help_result = runner.invoke(app, ["start-scheduler", "--help"])
     assert help_result.exit_code == 0
-    assert "--dry-run" in help_result.output
+    assert "--dry-run" in unstyle(help_result.output)
     result = runner.invoke(
         app,
         ["start-scheduler", "--interval", "github.com=15", "--dry-run"],
