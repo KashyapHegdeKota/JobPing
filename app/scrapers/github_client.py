@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import logging
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -17,6 +18,7 @@ from app.utils.resilience import external_retry
 GITHUB_API_URL = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
 DEFAULT_USER_AGENT = "JobPing/0.1"
+logger = logging.getLogger(__name__)
 type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
 
 
@@ -41,6 +43,7 @@ class GitHubRateLimitError(GitHubClientError):
         reset_at: datetime | None,
     ) -> None:
         super().__init__(message)
+        self.retryable = True
         self.retry_after_seconds = retry_after_seconds
         self.limit = limit
         self.remaining = remaining
@@ -237,28 +240,57 @@ class GitHubClient:
                 timeout=self._timeout,
                 follow_redirects=True,
             )
-        except httpx.HTTPError as exc:
-            raise GitHubClientError(f"GitHub request failed: {exc}") from exc
-        if response.status_code in {403, 429}:
-            raise self._rate_limit_error(response)
-        if response.status_code == 404:
-            raise GitHubNotFoundError(f"GitHub resource not found: {path}")
-        try:
-            response.raise_for_status()
+        except GitHubRateLimitError:
+            raise
         except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code
+            if status_code == 404:
+                raise GitHubNotFoundError(f"GitHub resource not found: {path}") from exc
             raise GitHubClientError(
-                f"GitHub returned HTTP {response.status_code} for {path}"
+                f"GitHub returned HTTP {status_code} for {path}"
             ) from exc
+        except httpx.HTTPError as exc:
+            raise GitHubClientError(f"GitHub request failed for {path}") from exc
         try:
             return cast(JsonValue, response.json())
         except ValueError as exc:
+            logger.error(
+                "GitHub returned invalid JSON for path=%s status=%d error_type=%s",
+                path,
+                response.status_code,
+                type(exc).__name__,
+            )
             raise GitHubClientError("GitHub returned an invalid JSON response") from exc
 
     @external_retry
     async def _request(self, path: str, **kwargs: object) -> httpx.Response:
-        response = await self._client.get(path, **kwargs)
-        if response.status_code in {408, 425, 500, 502, 503, 504}:
+        try:
+            response = await self._client.get(path, **kwargs)
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "GitHub transport failure for path=%s error_type=%s",
+                path,
+                type(exc).__name__,
+            )
+            raise
+        if response.status_code in {403, 429}:
+            error = self._rate_limit_error(response)
+            logger.warning(
+                "GitHub rate limit for path=%s status=%d remaining=%s",
+                path,
+                response.status_code,
+                error.remaining,
+            )
+            raise error
+        try:
             response.raise_for_status()
+        except httpx.HTTPStatusError:
+            logger.warning(
+                "GitHub HTTP failure for path=%s status=%d",
+                path,
+                response.status_code,
+            )
+            raise
         return response
 
     @staticmethod
