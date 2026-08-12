@@ -12,6 +12,8 @@ from typing import Self, cast
 
 import httpx
 
+from app.utils.resilience import external_retry
+
 GITHUB_API_URL = "https://api.github.com"
 GITHUB_API_VERSION = "2022-11-28"
 DEFAULT_USER_AGENT = "JobPing/0.1"
@@ -228,7 +230,7 @@ class GitHubClient:
         if self._closed:
             raise RuntimeError("GitHubClient is closed")
         try:
-            response = await self._client.get(
+            response = await self._request(
                 path,
                 params=params,
                 headers=self._request_headers,
@@ -251,6 +253,13 @@ class GitHubClient:
             return cast(JsonValue, response.json())
         except ValueError as exc:
             raise GitHubClientError("GitHub returned an invalid JSON response") from exc
+
+    @external_retry
+    async def _request(self, path: str, **kwargs: object) -> httpx.Response:
+        response = await self._client.get(path, **kwargs)
+        if response.status_code in {408, 425, 429, 500, 502, 503, 504}:
+            response.raise_for_status()
+        return response
 
     @staticmethod
     def _parse_summary(payload: object) -> GitHubCommitSummary:

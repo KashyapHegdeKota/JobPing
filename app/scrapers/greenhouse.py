@@ -11,6 +11,7 @@ import httpx
 
 from app.schemas.job import RawJobPayload
 from app.scrapers.base import BaseScraper
+from app.utils.resilience import external_retry
 
 GREENHOUSE_API_URL = "https://boards-api.greenhouse.io/v1/boards"
 _WHITESPACE = re.compile(r"\s+")
@@ -56,11 +57,18 @@ class GreenhouseScraper(BaseScraper):
 
         url = f"{self._base_url}/{quote(board_token, safe='')}/jobs"
         try:
-            response = await self._client.get(
+            response = await self._request_board(
                 url,
                 params={"content": "true"},
                 timeout=self._timeout,
             )
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in {429, 503}:
+                raise GreenhouseRateLimitError(
+                    "Greenhouse temporarily rejected the board request "
+                    f"(HTTP {exc.response.status_code})"
+                ) from exc
+            raise GreenhouseError(f"Greenhouse request failed: {exc}") from exc
         except httpx.HTTPError as exc:
             raise GreenhouseError(f"Greenhouse request failed: {exc}") from exc
         if response.status_code == 404:
@@ -88,6 +96,13 @@ class GreenhouseScraper(BaseScraper):
             if mapped is not None:
                 jobs.append(mapped)
         return jobs
+
+    @external_retry
+    async def _request_board(self, url: str, **kwargs: object) -> httpx.Response:
+        response = await self._client.get(url, **kwargs)
+        if response.status_code in {408, 425, 429, 500, 502, 503, 504}:
+            response.raise_for_status()
+        return response
 
     async def scrape(self, company: str) -> tuple[RawJobPayload, ...]:
         """Base-scraper-compatible alias for fetching a board."""

@@ -12,6 +12,7 @@ import httpx
 from app.schemas.job import RawJobPayload
 from app.scrapers.base import BaseScraper, ScraperError
 from app.scrapers.proxy import ProxyEndpoint, ProxyManager
+from app.utils.resilience import external_retry
 
 
 class ResponseLike(Protocol):
@@ -73,7 +74,7 @@ class CustomTechScraper(BaseScraper):
             if self._interceptor is not None and hasattr(self._interceptor, "attach"):
                 await self._interceptor.capture(page)
             for index in range(self._max_pages):
-                response = await page.goto(self._page_url(index), wait_until="domcontentloaded")
+                response = await self._navigate(page, self._page_url(index))
                 status = response.status if response is not None else 200
                 if status in {403, 429, 503}:
                     if proxy is not None and self._proxy_manager is not None:
@@ -101,6 +102,10 @@ class CustomTechScraper(BaseScraper):
             raise
         finally:
             await page.close()
+
+    @external_retry
+    async def _navigate(self, page: PageLike, url: str) -> ResponseLike | None:
+        return await page.goto(url, wait_until="domcontentloaded")
 
     def _map_unique(self, records: Sequence[object]) -> list[RawJobPayload]:
         jobs: list[RawJobPayload] = []

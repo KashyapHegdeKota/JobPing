@@ -9,6 +9,7 @@ import httpx
 
 from app.schemas.job import RawJobPayload
 from app.scrapers.base import BaseScraper
+from app.utils.resilience import external_retry
 
 _API_ROOT = "https://api.lever.co/v0/postings"
 _DEFAULT_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
@@ -44,13 +45,12 @@ class LeverScraper(BaseScraper):
         """Return valid postings for a Lever company/site token."""
         site = _site_token(company)
         try:
-            response = await self._client.get(
+            response = await self._request_site(
                 f"{_API_ROOT}/{quote(site, safe='')}",
                 params={"mode": "json"},
                 timeout=self._timeout,
                 headers={"Accept": "application/json"},
             )
-            response.raise_for_status()
         except httpx.TimeoutException as exc:
             raise LeverError(f"Lever request timed out for {site!r}") from exc
         except httpx.HTTPStatusError as exc:
@@ -73,6 +73,12 @@ class LeverScraper(BaseScraper):
             if mapped is not None:
                 postings.append(mapped)
         return tuple(postings)
+
+    @external_retry
+    async def _request_site(self, url: str, **kwargs: object) -> httpx.Response:
+        response = await self._client.get(url, **kwargs)
+        response.raise_for_status()
+        return response
 
     async def fetch(self, company: str) -> tuple[RawJobPayload, ...]:
         """Compatibility alias for BaseScraper implementations using ``fetch``."""

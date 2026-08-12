@@ -10,6 +10,7 @@ from urllib.parse import urljoin
 
 from app.schemas.job import RawJobPayload
 from app.scrapers.base import BaseScraper, ScraperError
+from app.utils.resilience import external_retry
 
 
 class Locator(Protocol):
@@ -73,7 +74,7 @@ class WorkdayScraper(BaseScraper):
     async def fetch_jobs(self) -> list[RawJobPayload]:
         page = await self._page_factory()
         try:
-            await page.goto(self.careers_url, timeout=self.navigation_timeout)
+            await self._navigate(page, self.careers_url)
             jobs: list[RawJobPayload] = []
             seen_pages: set[tuple[str, ...]] = set()
             for _ in range(self.max_pages):
@@ -93,6 +94,10 @@ class WorkdayScraper(BaseScraper):
             raise WorkdayScraperError(f"Workday browser scrape failed for {self.company}") from exc
         finally:
             await page.close()
+
+    @external_retry
+    async def _navigate(self, page: Page, url: str) -> object:
+        return await page.goto(url, timeout=self.navigation_timeout)
 
     async def _extract_page(self, page: Page) -> list[RawJobPayload]:
         cards = page.locator(self.selectors.cards)
