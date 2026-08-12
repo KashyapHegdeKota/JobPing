@@ -95,3 +95,10 @@ def test_run_simplify_parser_validates_season_before_execution() -> None:
 
     assert result.exit_code == 2
     assert "2026" in result.output
+
+
+def test_audit_db_requires_database_url(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    result = runner.invoke(cli.app, ["audit-db"])
+    assert result.exit_code == 2
+    assert "DATABASE_URL is required" in result.output

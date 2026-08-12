@@ -257,7 +257,7 @@ class GitHubClient:
     @external_retry
     async def _request(self, path: str, **kwargs: object) -> httpx.Response:
         response = await self._client.get(path, **kwargs)
-        if response.status_code in {408, 425, 429, 500, 502, 503, 504}:
+        if response.status_code in {408, 425, 500, 502, 503, 504}:
             response.raise_for_status()
         return response
 

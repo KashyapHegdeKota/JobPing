@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import selectors
 from collections.abc import Awaitable
+from datetime import timedelta
 from typing import Annotated
 
 import typer
@@ -16,6 +18,7 @@ from app.pipelines.simplify_pipeline import PipelineResult, SimplifyPipeline
 from app.scheduler import PollTarget, SchedulerDaemon, parse_intervals
 from app.schemas.job import JobType
 from app.scrapers.github_client import GitHubClient
+from app.services.db_audit import AuditReport, DatabaseAuditService
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 
 app = typer.Typer(help="Run JobPing ingestion tools.", no_args_is_help=True)
@@ -144,6 +147,53 @@ def _console_safe(value: str) -> str:
 
     encoding = sys.stdout.encoding or "utf-8"
     return value.encode(encoding, errors="replace").decode(encoding)
+
+
+async def _audit_database(database_url: str, stale_hours: float) -> AuditReport:
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions() as session:
+            return await DatabaseAuditService(
+                session, stale_after=timedelta(hours=stale_hours)
+            ).run()
+    finally:
+        await engine.dispose()
+
+
+@app.command("audit-db")
+def audit_db(
+    database_url: Annotated[
+        str | None, typer.Option(envvar="DATABASE_URL", help="Async SQLAlchemy database URL.")
+    ] = None,
+    stale_hours: Annotated[
+        float, typer.Option(min=0, help="Age threshold for stale closed statuses.")
+    ] = 24
+    * 30,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Audit scraper persistence integrity without modifying data."""
+    url = database_url or os.environ.get("DATABASE_URL")
+    if not url:
+        typer.echo("DATABASE_URL is required.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        report = _asyncio_run(_audit_database(url, stale_hours))
+    except Exception as exc:
+        typer.echo(f"Database audit failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    if json_output:
+        typer.echo(json.dumps(report.as_dict(), separators=(",", ":")))
+    elif report.healthy:
+        typer.echo("Database audit passed: no integrity violations found.")
+    else:
+        typer.echo("Database audit failed:")
+        for finding in report.findings:
+            typer.echo(f"  {finding.code}: {finding.count} ({','.join(map(str, finding.ids))})")
+    if not report.healthy:
+        raise typer.Exit(code=1)
 
 
 @app.command("run-simplify-parser")
