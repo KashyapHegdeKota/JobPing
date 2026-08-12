@@ -58,6 +58,16 @@ def test_parse_handles_missing_and_truncated_patches() -> None:
     assert GitPatchParser.parse("@@ -10 +10 @@\n-old\n+new").added_lines == ("new",)
 
 
+def test_parse_ignores_malformed_metadata_and_handles_long_lines() -> None:
+    long_content = "x" * 50_000
+    result = GitPatchParser.parse(
+        f"diff --git truncated\n@@ malformed\n+{long_content}\n\\ No newline at end of file"
+    )
+
+    assert result.added_lines == (long_content,)
+    assert result.removed_lines == ()
+
+
 def test_parse_file_filters_non_readmes_and_explicit_targets() -> None:
     root = file_patch("README.md", "+root")
     nested = file_patch("docs/README.mdx", "+nested")

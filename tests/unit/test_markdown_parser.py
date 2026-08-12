@@ -142,3 +142,52 @@ def test_closed_word_substrings_and_urls_do_not_create_false_positives() -> None
     )
     assert url_markup is not None
     assert url_markup.is_closed is False
+
+
+def test_handles_html_content_entities_and_pipes_inside_cell_contexts() -> None:
+    result = parse_markdown_table_row(
+        '| <span title="Research | Development">Acme &amp; Sons</span> | '
+        "Engineer &lt;Intern&gt; | New York<br/>Toronto • Remote | "
+        '<a data-label="Apply | now" href="https://jobs.test/apply?a=1&amp;b=2">'
+        "🚀 Apply</a> | Today |"
+    )
+
+    assert result is not None
+    assert result.company == "Acme & Sons"
+    assert result.title == "Engineer <Intern>"
+    assert result.location == "New York; Toronto; Remote"
+    assert result.apply_url == "https://jobs.test/apply?a=1&b=2"
+
+
+def test_handles_pipe_and_nested_parentheses_inside_markdown_apply_target() -> None:
+    result = parse_markdown_table_row(
+        "| Acme | Intern | Boston; New York | "
+        "[🚀 Application](https://jobs.test/apply/(student)?teams=a|b) | Today |"
+    )
+
+    assert result is not None
+    assert result.apply_url == "https://jobs.test/apply/(student)?teams=a|b"
+
+
+def test_bare_url_trims_prose_punctuation_but_keeps_balanced_parentheses() -> None:
+    result = parse_markdown_table_row(
+        "| Acme | Intern | Remote | Apply: https://jobs.test/apply/(student). | Today |"
+    )
+
+    assert result is not None
+    assert result.apply_url == "https://jobs.test/apply/(student)"
+
+
+def test_malformed_or_truncated_complex_rows_fail_closed_without_exception() -> None:
+    malformed = (
+        "| Acme | Intern | Remote | [Apply](https://jobs.test/apply/(student) | Today |",
+        '| Acme | Intern | Remote | <a href="https://jobs.test/apply| Apply | Today |',
+        "| Acme | Intern |",
+    )
+
+    assert all(parse_markdown_table_row(row) is None for row in malformed)
+
+
+def test_long_adversarial_markup_is_handled_without_recursion_or_backtracking_failure() -> None:
+    noise = "<" + ("x" * 20_000)
+    assert parse_markdown_table_row(f"| Acme | Intern | Remote | {noise} | Today |") is None

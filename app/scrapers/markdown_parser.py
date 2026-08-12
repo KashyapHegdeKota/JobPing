@@ -9,15 +9,20 @@ from collections.abc import Sequence
 from app.schemas.job import RawJobPayload
 
 _SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
-_HTML_TAG = re.compile(r"<[^>]+>")
-_IMAGE = re.compile(r"!\[[^]]*]\([^)]*\)")
-_BARE_URL = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
-_LOCK_ICON = re.compile(r"\U0001f512[\ufe0e\ufe0f]?\ufe0f?")
-_STRIKETHROUGH = re.compile(r"~~(?=\S)(?:(?!~~).)+?(?<=\S)~~", re.DOTALL)
-_CLOSED_STATUS = re.compile(
-    r"^(?:[\s*_`~]|<[^>]+>)*(?:closed)(?:[\s*_`~]|<[^>]+>)*$",
+_HTML_TAG = re.compile(r"<[^<>]*>")
+_IMAGE = re.compile(r"!\[[^]\r\n]*]\([^\r\n)]*\)")
+_BARE_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_HTML_HREF = re.compile(
+    r"<a\b[^<>]*?\bhref\s*=\s*(?P<quote>['\"])(?P<url>https?://.*?)\1",
     re.IGNORECASE,
 )
+_LOCK_ICON = re.compile(r"\U0001f512[\ufe0e\ufe0f]?\ufe0f?")
+_STRIKETHROUGH = re.compile(r"~~(?=\S)[^\r\n~]*(?<=\S)~~")
+_MARKDOWN_MARKUP = re.compile(r"(?<!\\)[*_`]")
+_STRIKE_MARKER = re.compile(r"~~")
+_BREAK_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_LOCATION_SEPARATOR = re.compile(r"\s*(?:[•·]|\n+)\s*")
+_CLOSED_STATUS = re.compile(r"^[\s*_`~]*(?:closed)[\s*_`~]*$", re.IGNORECASE)
 _HEADER_ALIASES = {
     "company": {"company", "employer"},
     "title": {"role", "title", "position", "job title"},
@@ -29,15 +34,36 @@ _DEFAULT_COLUMNS = ("company", "title", "location", "apply_url", "date")
 
 
 def _split_row(row: str) -> list[str]:
-    """Split a table row on unescaped pipes, retaining escaped literal pipes."""
+    """Split a row on structural pipes using a bounded, single-pass scanner."""
     text = row.strip()
     if not text.startswith("|"):
         return []
     cells: list[str] = []
     current: list[str] = []
     escaped = False
+    html_quote: str | None = None
+    in_html_tag = False
+    link_depth = 0
+    previous = ""
     for character in text[1:]:
-        if character == "|" and not escaped:
+        if in_html_tag:
+            if html_quote:
+                if character == html_quote and not escaped:
+                    html_quote = None
+            elif character in {'"', "'"}:
+                html_quote = character
+            elif character == ">":
+                in_html_tag = False
+        elif character == "<":
+            in_html_tag = True
+        elif character == "(" and previous == "]" and not escaped:
+            link_depth = 1
+        elif link_depth and character == "(" and not escaped:
+            link_depth += 1
+        elif link_depth and character == ")" and not escaped:
+            link_depth -= 1
+
+        if character == "|" and not escaped and not in_html_tag and link_depth == 0:
             cells.append("".join(current).strip())
             current = []
         else:
@@ -45,6 +71,7 @@ def _split_row(row: str) -> list[str]:
         escaped = character == "\\" and not escaped
         if character != "\\":
             escaped = False
+        previous = character
     if current:
         cells.append("".join(current).strip())
     if cells and not cells[-1] and text.endswith("|"):
@@ -54,15 +81,18 @@ def _split_row(row: str) -> list[str]:
 
 def _plain_text(cell: str, *, location: bool = False) -> str:
     """Remove presentation markup while retaining meaningful cell text."""
-    value = html.unescape(cell)
+    value = cell
     if location:
-        value = re.sub(r"<br\s*/?>", "; ", value, flags=re.IGNORECASE)
+        value = _BREAK_TAG.sub("; ", value)
     value = _IMAGE.sub("", value)
     value = _replace_links_with_labels(value)
     value = _HTML_TAG.sub("", value)
+    value = html.unescape(value)
+    if location:
+        value = _LOCATION_SEPARATOR.sub("; ", value)
     value = _LOCK_ICON.sub("", value)
-    value = re.sub(r"~~", "", value)
-    value = re.sub(r"(?<!\\)[*_`]", "", value)
+    value = _STRIKE_MARKER.sub("", value)
+    value = _MARKDOWN_MARKUP.sub("", value)
     value = value.replace(r"\|", "|").replace(r"\*", "*").replace(r"\_", "_")
     return " ".join(value.split()).strip()
 
@@ -78,7 +108,7 @@ def _is_closed_row(cells: Sequence[str], mapped: dict[str, str]) -> bool:
     return (
         any(_LOCK_ICON.search(_without_url_targets(cell)) for cell in cells)
         or any(_STRIKETHROUGH.search(_without_url_targets(cell)) for cell in relevant)
-        or any(_CLOSED_STATUS.fullmatch(html.unescape(cell).strip()) for cell in cells)
+        or any(_is_closed_status(cell) for cell in cells)
     )
 
 
@@ -91,6 +121,12 @@ def _without_url_targets(cell: str) -> str:
 def _clean_status_artifacts(value: str) -> str:
     """Remove a standalone closed tag while preserving legitimate wording."""
     return "" if _CLOSED_STATUS.fullmatch(value) else value
+
+
+def _is_closed_status(cell: str) -> bool:
+    """Return whether visible cell text is exactly a formatted closed status."""
+    visible = html.unescape(_HTML_TAG.sub("", cell)).strip()
+    return _CLOSED_STATUS.fullmatch(visible) is not None
 
 
 def _replace_links_with_labels(value: str) -> str:
@@ -130,20 +166,37 @@ def _balanced_url_end(value: str, start: int) -> int | None:
 
 def _extract_url(cell: str) -> str | None:
     value = html.unescape(cell).strip()
+    anchor = _HTML_HREF.search(value)
+    if anchor:
+        return anchor.group("url").strip()
+    if "<a" in value.casefold():
+        return None
     cursor = 0
+    saw_markdown_target = False
     while True:
         marker = value.find("](", cursor)
         if marker < 0:
             break
+        saw_markdown_target = True
         end = _balanced_url_end(value, marker + 2)
         if end is None:
-            break
+            return None
         candidate = value[marker + 2 : end].strip()
         if candidate.lower().startswith(("https://", "http://")):
             return candidate.replace(r"\)", ")")
         cursor = end + 1
+    if saw_markdown_target:
+        return None
     bare = _BARE_URL.search(value)
-    return bare.group(0).rstrip(".,;") if bare else None
+    return _trim_url_punctuation(bare.group(0)) if bare else None
+
+
+def _trim_url_punctuation(value: str) -> str:
+    """Trim prose punctuation without removing balanced URL parentheses."""
+    value = value.rstrip(".,;:!?")
+    while value.endswith(")") and value.count(")") > value.count("("):
+        value = value[:-1]
+    return value
 
 
 def _canonical_columns(headers: Sequence[str] | None, cell_count: int) -> list[str]:
@@ -182,7 +235,9 @@ def parse_markdown_table_row(
     columns = _canonical_columns(headers, len(cells))
     if len(columns) < len(cells):
         columns.extend("extra" for _ in range(len(cells) - len(columns)))
-    mapped = {name: cells[index] for index, name in enumerate(columns) if name != "extra"}
+    mapped = {
+        name: cells[index] for index, name in enumerate(columns[: len(cells)]) if name != "extra"
+    }
     if not {"company", "title", "location", "apply_url"}.issubset(mapped):
         return None
 

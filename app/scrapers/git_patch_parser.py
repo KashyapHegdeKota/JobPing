@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from enum import StrEnum
 
 from app.scrapers.github_client import GitHubFilePatch
+
+_DIFF_FILE_HEADER = re.compile(r"^(?:\+\+\+|---)\s")
 
 
 class ChangeKind(StrEnum):
@@ -52,7 +55,9 @@ class GitPatchParser:
 
         changed: list[ChangedLine] = []
         for line in patch.splitlines():
-            if line.startswith(("+++ ", "--- ")):
+            if not line:
+                continue
+            if _DIFF_FILE_HEADER.match(line):
                 continue
             if line.startswith("+"):
                 changed.append(ChangedLine(ChangeKind.ADDED, line[1:]))
