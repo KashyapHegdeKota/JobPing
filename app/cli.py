@@ -294,7 +294,11 @@ def start_scheduler(
         ),
     ] = None,
     dry_run: Annotated[
-        bool, typer.Option(help="Validate and print configuration without starting.")
+        bool,
+        typer.Option(
+            "--dry-run/--no-dry-run",
+            help="Validate and print configuration without starting.",
+        ),
     ] = False,
 ) -> None:
     """Start the UTC asynchronous polling scheduler."""
