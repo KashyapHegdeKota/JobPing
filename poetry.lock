@@ -1246,8 +1246,4 @@ files = [
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.12,<4.0"
-<<<<<<< HEAD
-content-hash = "83fab7ab5811e75fb42b01cc65fc687369db2304005abd0b31a08cc4bebbbde8"
-=======
-content-hash = "0d4097d9281a97019a3dda1751b6b362242b36d7084291f915a9e72cf479ba19"
->>>>>>> 4345dd6 (feat: implement rate limiting and user-agent rotation module)
+content-hash = "47053fc3e4370c98b5f9c1ffd21abb2a66230fd5f8b7c8ba1ccbc528f14bf3bc"
