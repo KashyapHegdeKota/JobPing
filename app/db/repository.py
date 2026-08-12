@@ -2,17 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from typing import Any, cast
 
-from sqlalchemy import func, select
+from sqlalchemy import event, func, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.db.models import Company, JobPosting, JobType, StatusLog
+from app.events.publisher import EventPublisher, JobEventType
 from app.schemas.job import NormalizedJob
+
+logger = logging.getLogger(__name__)
+
+_PENDING_EVENTS_KEY = "jobping_pending_events"
 
 
 class DatabaseRepository:
@@ -23,8 +32,47 @@ class DatabaseRepository:
     committed or rolled back as a single unit.
     """
 
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(self, session: AsyncSession, publisher: EventPublisher | None = None) -> None:
         self._session = session
+        self._publisher = publisher
+        self._publish_tasks: set[asyncio.Task[None]] = set()
+        if publisher is not None and not session.sync_session.info.get("jobping_events_configured"):
+            session.sync_session.info["jobping_events_configured"] = True
+            event.listen(session.sync_session, "after_commit", self._after_commit)
+            event.listen(session.sync_session, "after_rollback", self._after_rollback)
+
+    def _after_commit(self, session: Session) -> None:
+        info = session.info
+        pending = info.pop(_PENDING_EVENTS_KEY, [])
+        for event_data in pending:
+            task = asyncio.get_running_loop().create_task(self._publish_event(event_data))
+            self._publish_tasks.add(task)
+            task.add_done_callback(self._publish_tasks.discard)
+            task.add_done_callback(self._log_task_failure)
+
+    @staticmethod
+    def _after_rollback(session: Session) -> None:
+        session.info.pop(_PENDING_EVENTS_KEY, None)
+
+    @staticmethod
+    def _log_task_failure(task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and (error := task.exception()) is not None:
+            logger.error("Committed job event callback failed", exc_info=error)
+
+    async def _publish_event(self, event_data: dict[str, object]) -> None:
+        if self._publisher is None:
+            return
+        await self._publisher.publish_job_event(
+            JobEventType(str(event_data["event_type"])),
+            job_id=int(event_data["job_id"]),
+            base_hash=str(event_data["base_hash"]),
+            payload=cast(dict[str, Any], event_data["payload"]),
+        )
+
+    async def wait_for_pending_events(self) -> None:
+        """Wait until post-commit publications scheduled by this repository finish."""
+        while self._publish_tasks:
+            await asyncio.gather(*tuple(self._publish_tasks))
 
     @asynccontextmanager
     async def _transaction(self) -> AsyncIterator[None]:
@@ -86,7 +134,9 @@ class DatabaseRepository:
                 "job_type": JobType(normalized_job.job_type),
                 "is_closed": normalized_job.is_closed,
             }
-            if existing is None:
+            was_created = existing is None
+            changed = False
+            if was_created:
                 existing = JobPosting(base_hash=normalized_job.base_hash, **values)
                 if normalized_job.created_at is not None:
                     existing.created_at = normalized_job.created_at
@@ -100,6 +150,25 @@ class DatabaseRepository:
                 if changed:
                     existing.updated_at = normalized_job.updated_at or datetime.now(UTC)
             await self._session.flush()
+            if self._publisher is not None and (was_created or changed):
+                event_type = JobEventType.JOB_CREATED if was_created else JobEventType.JOB_UPDATED
+                self._session.sync_session.info.setdefault(_PENDING_EVENTS_KEY, []).append(
+                    {
+                        "event_type": event_type.value,
+                        "job_id": existing.id,
+                        "base_hash": existing.base_hash,
+                        "payload": {
+                            "company_id": existing.company_id,
+                            "title": existing.title,
+                            "apply_url": existing.apply_url,
+                            "location": existing.location,
+                            "season": existing.season,
+                            "job_type": existing.job_type.value,
+                            "is_closed": existing.is_closed,
+                            "content_hash": existing.content_hash,
+                        },
+                    }
+                )
             return existing
 
     async def log_status_change(
