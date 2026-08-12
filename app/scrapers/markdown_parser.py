@@ -12,6 +12,12 @@ _SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _HTML_TAG = re.compile(r"<[^>]+>")
 _IMAGE = re.compile(r"!\[[^]]*]\([^)]*\)")
 _BARE_URL = re.compile(r"https?://[^\s<>]+", re.IGNORECASE)
+_LOCK_ICON = re.compile(r"\U0001f512[\ufe0e\ufe0f]?\ufe0f?")
+_STRIKETHROUGH = re.compile(r"~~(?=\S)(?:(?!~~).)+?(?<=\S)~~", re.DOTALL)
+_CLOSED_STATUS = re.compile(
+    r"^(?:[\s*_`~]|<[^>]+>)*(?:closed)(?:[\s*_`~]|<[^>]+>)*$",
+    re.IGNORECASE,
+)
 _HEADER_ALIASES = {
     "company": {"company", "employer"},
     "title": {"role", "title", "position", "job title"},
@@ -54,9 +60,37 @@ def _plain_text(cell: str, *, location: bool = False) -> str:
     value = _IMAGE.sub("", value)
     value = _replace_links_with_labels(value)
     value = _HTML_TAG.sub("", value)
+    value = _LOCK_ICON.sub("", value)
+    value = re.sub(r"~~", "", value)
     value = re.sub(r"(?<!\\)[*_`]", "", value)
     value = value.replace(r"\|", "|").replace(r"\*", "*").replace(r"\_", "_")
     return " ".join(value.split()).strip()
+
+
+def _is_closed_row(cells: Sequence[str], mapped: dict[str, str]) -> bool:
+    """Detect explicit closed-state presentation without matching ordinary prose."""
+    relevant = (
+        mapped.get("company", ""),
+        mapped.get("title", ""),
+        mapped.get("location", ""),
+        mapped.get("apply_url", ""),
+    )
+    return (
+        any(_LOCK_ICON.search(_without_url_targets(cell)) for cell in cells)
+        or any(_STRIKETHROUGH.search(_without_url_targets(cell)) for cell in relevant)
+        or any(_CLOSED_STATUS.fullmatch(html.unescape(cell).strip()) for cell in cells)
+    )
+
+
+def _without_url_targets(cell: str) -> str:
+    """Retain visible Markdown labels but exclude URLs from state signals."""
+    visible = _replace_links_with_labels(html.unescape(cell))
+    return _BARE_URL.sub("", visible)
+
+
+def _clean_status_artifacts(value: str) -> str:
+    """Remove a standalone closed tag while preserving legitimate wording."""
+    return "" if _CLOSED_STATUS.fullmatch(value) else value
 
 
 def _replace_links_with_labels(value: str) -> str:
@@ -152,9 +186,10 @@ def parse_markdown_table_row(
     if not {"company", "title", "location", "apply_url"}.issubset(mapped):
         return None
 
-    company = _plain_text(mapped["company"])
-    title = _plain_text(mapped["title"])
-    location = _plain_text(mapped["location"], location=True)
+    is_closed = _is_closed_row(cells, mapped)
+    company = _clean_status_artifacts(_plain_text(mapped["company"]))
+    title = _clean_status_artifacts(_plain_text(mapped["title"]))
+    location = _clean_status_artifacts(_plain_text(mapped["location"], location=True))
     apply_url = _extract_url(mapped["apply_url"])
     header_values = {alias for aliases in _HEADER_ALIASES.values() for alias in aliases}
     if (
@@ -175,5 +210,6 @@ def parse_markdown_table_row(
         title=title,
         apply_url=apply_url,
         location=location,
+        is_closed=is_closed,
         payload={"raw_row": row, "raw_cells": cells, "date_posted": date},
     )
