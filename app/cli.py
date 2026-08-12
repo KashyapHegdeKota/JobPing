@@ -113,10 +113,7 @@ async def _persist_results(results: tuple[PipelineResult, ...], database_url: st
     try:
         async with sessions() as session, session.begin():
             repository = DatabaseRepository(session)
-            for result in results:
-                for state in DeduplicationState:
-                    for item in result.categorized(state):
-                        await repository.save_job_posting(item.job)
+            await SimplifyPipeline.persist_results(repository, results)
     finally:
         await engine.dispose()
 

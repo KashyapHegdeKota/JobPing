@@ -143,11 +143,11 @@ async def test_database_failure_rolls_back_and_is_not_hidden(
     async with sessions() as session:
         pipeline = ATSPipeline([scraper], dedupe, session, season=2026, job_type=JobType.INTERNSHIP)
 
-        async def fail_log(job_id: int, previous_state: str | None, new_state: str) -> StatusLog:
-            del job_id, previous_state, new_state
+        async def fail_bulk(jobs: object) -> list[JobPosting]:
+            del jobs
             raise RuntimeError("database write failed")
 
-        monkeypatch.setattr(pipeline._repository, "log_status_change", fail_log)
+        monkeypatch.setattr(pipeline._repository, "bulk_upsert_job_postings", fail_bulk)
         with pytest.raises(RuntimeError, match="database write failed"):
             await pipeline.run()
         assert await session.scalar(select(func.count()).select_from(JobPosting)) == 0

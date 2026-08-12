@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from pydantic import ValidationError
 
+from app.db.repository import DatabaseRepository
 from app.schemas.job import JobType, NormalizedJob, RawJobPayload
 from app.scrapers.git_patch_parser import ChangedLine, ChangeKind, GitPatchParser
 from app.scrapers.github_client import (
@@ -182,6 +183,23 @@ class SimplifyPipeline:
             ),
         )
         return await self.process_detail(detail)
+
+    @staticmethod
+    async def persist_results(
+        repository: DatabaseRepository, results: tuple[PipelineResult, ...]
+    ) -> None:
+        """Persist classified rows through the repository's batch fast path."""
+        jobs = [
+            item.job
+            for result in results
+            for state in DeduplicationState
+            for item in result.categorized(state)
+        ]
+        # A batch spanning commits can contain the same identity repeatedly. Keep
+        # the final observed state while retaining deterministic first-seen order.
+        latest = {job.base_hash: job for job in jobs}
+        ordered = list(dict.fromkeys(job.base_hash for job in jobs))
+        await repository.bulk_upsert_job_postings([latest[base_hash] for base_hash in ordered])
 
 
 def _coalesce_html_rows(lines: tuple[ChangedLine, ...]) -> tuple[ChangedLine, ...]:
