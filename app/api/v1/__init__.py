@@ -1,1 +1,1 @@
-"""Version 1 HTTP API routes."""
+"""Version 1 API routes and real-time delivery helpers."""
