@@ -9,7 +9,7 @@ from app.api.v1.websocket_manager import manager
 router = APIRouter(tags=["live"])
 
 
-@router.websocket("/api/v1/ws/live")
+@router.websocket("/ws/live")
 async def live_job_feed(websocket: WebSocket) -> None:
     """Keep a client registered for broadcasts until it disconnects.
 
