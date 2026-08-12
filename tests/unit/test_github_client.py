@@ -86,6 +86,44 @@ async def test_get_commit_filters_target_markdown_patches() -> None:
 
 
 @pytest.mark.asyncio
+async def test_get_commit_without_ref_resolves_latest_commit_sha() -> None:
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/repos/acme/jobs/commits":
+            assert request.url.params["per_page"] == "1"
+            return httpx.Response(200, json=[commit_payload()])
+        assert request.url.path == "/repos/acme/jobs/commits/abc123"
+        return httpx.Response(200, json=commit_payload(files=[]))
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(base_url="https://api.github.test", transport=transport) as http:
+        detail = await GitHubClient(client=http).get_commit("acme", "jobs")
+
+    assert detail.sha == "abc123"
+    assert len(requests) == 2
+
+
+@pytest.mark.asyncio
+async def test_requests_follow_repository_redirects() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/repos/old/jobs/commits/main":
+            return httpx.Response(
+                301,
+                headers={"Location": "https://api.github.test/repos/new/jobs/commits/main"},
+            )
+        assert request.url.path == "/repos/new/jobs/commits/main"
+        return httpx.Response(200, json=commit_payload(files=[]))
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(base_url="https://api.github.test", transport=transport) as http:
+        client = GitHubClient(client=http)
+        detail = await client.get_commit("old", "jobs", "main")
+    assert detail.sha == "abc123"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("status", [403, 429])
 async def test_rate_limit_headers_are_exposed(status: int) -> None:
     transport = httpx.MockTransport(

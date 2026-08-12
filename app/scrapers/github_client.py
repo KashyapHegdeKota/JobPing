@@ -99,7 +99,10 @@ class GitHubClient:
             headers["Authorization"] = f"Bearer {resolved_token}"
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
-            base_url=base_url.rstrip("/"), headers=headers, timeout=timeout
+            base_url=base_url.rstrip("/"),
+            headers=headers,
+            timeout=timeout,
+            follow_redirects=True,
         )
         self._request_headers = headers if client is not None else {}
         self._timeout = timeout
@@ -137,12 +140,18 @@ class GitHubClient:
         self,
         owner: str,
         repo: str,
-        ref: str,
+        ref: str | None = None,
         *,
         target_markdown_paths: set[str] | None = None,
     ) -> GitHubCommitDetail:
-        """Return commit detail, retaining Markdown patches requested by the caller."""
-        payload = await self._get_json(f"/repos/{owner}/{repo}/commits/{ref}")
+        """Return commit detail, resolving the latest commit when ref is absent."""
+        resolved_ref = ref
+        if not resolved_ref:
+            commits = await self.list_commits(owner, repo, per_page=1)
+            if not commits:
+                raise GitHubNotFoundError(f"GitHub repository has no commits: {owner}/{repo}")
+            resolved_ref = commits[0].sha
+        payload = await self._get_json(f"/repos/{owner}/{repo}/commits/{resolved_ref}")
         if not isinstance(payload, dict):
             raise GitHubClientError("GitHub returned an invalid commit response")
         files_payload = payload.get("files", [])
@@ -189,7 +198,11 @@ class GitHubClient:
             raise RuntimeError("GitHubClient is closed")
         try:
             response = await self._client.get(
-                path, params=params, headers=self._request_headers, timeout=self._timeout
+                path,
+                params=params,
+                headers=self._request_headers,
+                timeout=self._timeout,
+                follow_redirects=True,
             )
         except httpx.HTTPError as exc:
             raise GitHubClientError(f"GitHub request failed: {exc}") from exc

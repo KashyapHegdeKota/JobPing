@@ -14,11 +14,11 @@ runner = CliRunner()
 def test_run_simplify_parser_passes_options_and_prints_summary(monkeypatch: MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
-    async def fake_process(**kwargs: object) -> PipelineResult:
+    async def fake_process(**kwargs: object) -> tuple[PipelineResult, ...]:
         captured.update(kwargs)
-        return PipelineResult(commit_sha="abc123")
+        return (PipelineResult(commit_sha="abc123"),)
 
-    monkeypatch.setattr(cli, "_process_commit", fake_process)
+    monkeypatch.setattr(cli, "_process_commits", fake_process)
     result = runner.invoke(
         cli.app,
         [
@@ -47,7 +47,8 @@ def test_run_simplify_parser_passes_options_and_prints_summary(monkeypatch: Monk
     assert captured == {
         "owner": "Example",
         "repo": "Jobs",
-        "ref": "deadbeef",
+        "commit_sha": "deadbeef",
+        "limit": 1,
         "target_readme": "jobs/README.md",
         "season": 2027,
         "job_type": JobType.NEW_GRAD,
@@ -59,11 +60,11 @@ def test_run_simplify_parser_passes_options_and_prints_summary(monkeypatch: Monk
 def test_run_simplify_parser_uses_environment_without_exposing_token(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    async def fake_process(**kwargs: object) -> PipelineResult:
+    async def fake_process(**kwargs: object) -> tuple[PipelineResult, ...]:
         assert kwargs["github_token"] == "top-secret"
-        return PipelineResult(commit_sha="from-env")
+        return (PipelineResult(commit_sha="from-env"),)
 
-    monkeypatch.setattr(cli, "_process_commit", fake_process)
+    monkeypatch.setattr(cli, "_process_commits", fake_process)
     result = runner.invoke(
         cli.app,
         ["run-simplify-parser"],
@@ -76,11 +77,11 @@ def test_run_simplify_parser_uses_environment_without_exposing_token(
 
 
 def test_run_simplify_parser_returns_nonzero_on_failure(monkeypatch: MonkeyPatch) -> None:
-    async def fake_process(**kwargs: object) -> PipelineResult:
+    async def fake_process(**kwargs: object) -> tuple[PipelineResult, ...]:
         del kwargs
         raise RuntimeError("service unavailable")
 
-    monkeypatch.setattr(cli, "_process_commit", fake_process)
+    monkeypatch.setattr(cli, "_process_commits", fake_process)
     result = runner.invoke(cli.app, ["run-simplify-parser"])
 
     assert result.exit_code == 1

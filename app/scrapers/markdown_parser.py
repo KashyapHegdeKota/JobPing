@@ -10,6 +10,7 @@ from app.schemas.job import RawJobPayload
 
 _SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _HTML_TAG = re.compile(r"<[^<>]*>")
+_HTML_TABLE_CELL = re.compile(r"<td\b[^>]*>(.*?)</td\s*>", re.IGNORECASE | re.DOTALL)
 _IMAGE = re.compile(r"!\[[^]\r\n]*]\([^\r\n)]*\)")
 _BARE_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _HTML_HREF = re.compile(
@@ -228,7 +229,10 @@ def parse_markdown_table_row(
     used. Raw cells and the original row remain in ``payload`` for later state
     classification, including closed-role detection.
     """
-    cells = _split_row(row)
+    html_cells = _HTML_TABLE_CELL.findall(row) if "<td" in row.casefold() else []
+    if len(html_cells) > len(_DEFAULT_COLUMNS):
+        html_cells = html_cells[-len(_DEFAULT_COLUMNS) :]
+    cells = html_cells or _split_row(row)
     if len(cells) < 4 or all(_SEPARATOR_CELL.fullmatch(cell.strip()) for cell in cells):
         return None
 

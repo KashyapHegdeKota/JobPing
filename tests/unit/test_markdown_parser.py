@@ -3,6 +3,24 @@
 from app.scrapers.markdown_parser import parse_markdown_table_row
 
 
+def test_parses_generated_multiline_html_table_row() -> None:
+    row = """<tr>
+<td><strong><a href="https://simplify.jobs/c/Acme">Acme</a></strong></td>
+<td>Software Engineer Intern</td>
+<td>New York, NY</td>
+<td><a href="https://jobs.acme.test/apply"><img alt="Apply"></a></td>
+<td>0d</td>
+</tr>"""
+
+    parsed = parse_markdown_table_row(row)
+
+    assert parsed is not None
+    assert parsed.company == "Acme"
+    assert parsed.title == "Software Engineer Intern"
+    assert parsed.location == "New York, NY"
+    assert str(parsed.apply_url) == "https://jobs.acme.test/apply"
+
+
 def test_parses_canonical_row_and_preserves_source_data() -> None:
     row = (
         "| **Acme &amp; Co.** | `Software Engineer Intern` | New York<br>Remote | "

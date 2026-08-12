@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from pydantic import ValidationError
 
 from app.schemas.job import JobType, NormalizedJob, RawJobPayload
-from app.scrapers.git_patch_parser import ChangeKind, GitPatchParser
+from app.scrapers.git_patch_parser import ChangedLine, ChangeKind, GitPatchParser
 from app.scrapers.github_client import GitHubClient, GitHubCommitDetail
 from app.scrapers.markdown_parser import parse_markdown_table_row
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
@@ -72,7 +72,7 @@ class SimplifyPipeline:
         self._job_type = job_type
         self._targets = target_readme_paths
 
-    async def process_commit(self, owner: str, repo: str, ref: str) -> PipelineResult:
+    async def process_commit(self, owner: str, repo: str, ref: str | None = None) -> PipelineResult:
         """Fetch and process one commit reference."""
         detail = await self._github.get_commit(
             owner, repo, ref, target_markdown_paths=self._targets
@@ -87,7 +87,7 @@ class SimplifyPipeline:
             detail.files, target_readme_paths=self._targets
         ):
             filename = parsed_patch.filename or "README.md"
-            for line in parsed_patch.lines:
+            for line in _coalesce_html_rows(parsed_patch.lines):
                 source_id = f"{detail.sha}:{filename}"
                 try:
                     raw = parse_markdown_table_row(
@@ -145,3 +145,32 @@ class SimplifyPipeline:
             item = PipelineItem(state, job, raw, detail.sha, detail.html_url, filename, kind)
             result.items[state].append(item)
         return result
+
+
+def _coalesce_html_rows(lines: tuple[ChangedLine, ...]) -> tuple[ChangedLine, ...]:
+    """Join changed multi-line HTML table rows emitted by generated READMEs."""
+    output: list[ChangedLine] = []
+    buffered: list[str] = []
+    buffered_kind: ChangeKind | None = None
+    for line in lines:
+        content = line.content.strip()
+        if buffered:
+            if line.kind is buffered_kind:
+                buffered.append(line.content)
+                if "</tr>" in content.casefold():
+                    output.append(ChangedLine(line.kind, "\n".join(buffered)))
+                    buffered = []
+                    buffered_kind = None
+                continue
+            output.extend(ChangedLine(buffered_kind, item) for item in buffered)
+            buffered = []
+            buffered_kind = None
+        lowered = content.casefold()
+        if ("<tr" in lowered or "<td" in lowered) and "</tr>" not in lowered:
+            buffered = [line.content]
+            buffered_kind = line.kind
+        else:
+            output.append(line)
+    if buffered and buffered_kind is not None:
+        output.extend(ChangedLine(buffered_kind, item) for item in buffered)
+    return tuple(output)
