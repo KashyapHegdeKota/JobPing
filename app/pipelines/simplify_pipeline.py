@@ -162,7 +162,7 @@ class SimplifyPipeline:
             result.items[state].append(item)
 
     async def process_full_sync(
-        self, owner: str, repo: str, *, path: str = "README.md", ref: str = "main"
+        self, owner: str, repo: str, *, path: str = "README.md", ref: str = "dev"
     ) -> PipelineResult:
         """Parse and classify the raw current file without commit-diff processing."""
         source = await self._github.get_file_text(owner, repo, path, ref=ref)
@@ -197,7 +197,7 @@ class SimplifyPipeline:
         repo: str,
         paths: tuple[str, ...],
         *,
-        ref: str = "main",
+        ref: str = "dev",
     ) -> tuple[PipelineResult, ...]:
         """Fetch and parse each current Markdown target directly from a branch."""
         normalized_paths = tuple(dict.fromkeys(path.strip() for path in paths if path.strip()))

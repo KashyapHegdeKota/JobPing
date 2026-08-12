@@ -55,7 +55,7 @@ deployed environment.
 | `GITHUB_OWNER` | `SimplifyJobs` | CLI | Target repository owner. |
 | `GITHUB_REPO` | `Summer2026-Internships` | CLI | Target repository name. |
 | `GITHUB_REF` | `HEAD` | CLI | Commit SHA, tag, or branch to process. |
-| `SIMPLIFY_FULL_SYNC_REF` | `main` | full-sync CLI | Branch used for raw-file bootstrap reads; intentionally separate from GitHub Actions' reserved `GITHUB_REF`. |
+| `SIMPLIFY_FULL_SYNC_REF` | `dev` | full-sync CLI | Simplify's live-updates branch used for raw-file bootstrap reads; intentionally separate from GitHub Actions' reserved `GITHUB_REF`. |
 | `TARGET_README` | `README.md` | CLI | Exact Markdown path inspected in the commit. |
 | `TARGET_READMES` | `README.md,README-Off-Season.md` | full-sync CLI | Comma-separated raw Markdown paths used when no repeatable `--target-readme` options are provided. |
 | `JOB_SEASON` | `2026` | CLI | Hiring season; accepted values are 2026 and 2027. |
@@ -136,7 +136,7 @@ Use `--help` for the authoritative option list. The command prints counts for `N
 `ROLE_UPDATED`, `ROLE_CLOSED`, `NO_OP`, and rejected rows. Redis state has a 90-day TTL, so
 reprocessing an unchanged role normally returns `NO_OP`.
 
-Bootstrap PostgreSQL directly from the current raw files on the repository's `main` branch:
+Bootstrap PostgreSQL directly from the current raw files on Simplify's live `dev` branch:
 
 ```shell
 poetry run python -m app.cli run-simplify-full-sync \

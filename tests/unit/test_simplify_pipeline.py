@@ -172,7 +172,7 @@ async def test_full_sync_fetches_multiple_raw_files_without_commit_diffs() -> No
         ("README.md", "README-Off-Season.md"),
     )
 
-    assert github.paths == [("README.md", "main"), ("README-Off-Season.md", "main")]
+    assert github.paths == [("README.md", "dev"), ("README-Off-Season.md", "dev")]
     assert [result.commit_sha for result in results] == ["sha-1", "sha-2"]
     assert [result.categorized(DeduplicationState.NEW_ROLE)[0].filename for result in results] == [
         "README.md",

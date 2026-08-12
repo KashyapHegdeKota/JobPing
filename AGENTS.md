@@ -48,7 +48,7 @@ Redis classification and PostgreSQL writes are separate systems, not one distrib
 ## Ingestion and scraper behavior
 
 - `BaseScraper` owns a client only when it creates it, records run timing/count/success, and exposes async cleanup/context-manager behavior. Preserve caller ownership for injected clients.
-- GitHub follows redirects, resolves the default/latest commit safely, handles rate limits, extracts only target README patches, and supports full-file seeding. Patch parsing excludes diff metadata. Markdown parsing tolerates changing columns, continuation company marker `↳`, HTML rows/tags, varied links, multiple locations, lock emoji, strikethrough, and explicit closed status.
+- GitHub follows redirects, resolves the default/latest commit safely, handles rate limits, extracts only target README patches, and supports full-file seeding from Simplify's live `dev` branch by default. Patch parsing excludes diff metadata. Markdown parsing tolerates changing columns, continuation company marker `↳`, HTML rows/tags, varied links, multiple locations, lock emoji, strikethrough, and explicit closed status.
 - Greenhouse and Lever consume public JSON endpoints and return `RawJobPayload`; malformed individual rows should be logged/rejected without silently losing the whole response.
 - `BrowserManager` provides Playwright contexts with randomized profiles, stealth application, optional proxy attachment, and configurable resource blocking. Browser hardening does not guarantee bypass of bot controls.
 - `ProxyManager` loads `PROXY_LIST`, rotates healthy endpoints, cools down 403/429/503 failures, and must never expose credentials in logs or errors.
