@@ -213,9 +213,7 @@ async def test_invalid_json_is_logged_and_raised_without_response_body(
 
     async with httpx.AsyncClient(base_url="https://api.github.test", transport=transport) as http:
         with pytest.raises(GitHubClientError, match="invalid JSON"):
-            await GitHubClient(client=http, token="super-secret-token").list_commits(
-                "acme", "jobs"
-            )
+            await GitHubClient(client=http, token="super-secret-token").list_commits("acme", "jobs")
 
     assert "error_type=JSONDecodeError" in caplog.text
     assert secret_body not in caplog.text

@@ -246,9 +246,7 @@ class GitHubClient:
             status_code = exc.response.status_code
             if status_code == 404:
                 raise GitHubNotFoundError(f"GitHub resource not found: {path}") from exc
-            raise GitHubClientError(
-                f"GitHub returned HTTP {status_code} for {path}"
-            ) from exc
+            raise GitHubClientError(f"GitHub returned HTTP {status_code} for {path}") from exc
         except httpx.HTTPError as exc:
             raise GitHubClientError(f"GitHub request failed for {path}") from exc
         try:
