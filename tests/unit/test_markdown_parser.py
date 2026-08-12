@@ -42,9 +42,7 @@ def test_coalesces_multiline_html_rows_without_crossing_change_kinds() -> None:
 
     coalesced = coalesce_html_table_rows(lines)
 
-    assert coalesced[0] == ChangedLine(
-        ChangeKind.ADDED, "<tr><td>Acme</td>\n<td>Intern</td></tr>"
-    )
+    assert coalesced[0] == ChangedLine(ChangeKind.ADDED, "<tr><td>Acme</td>\n<td>Intern</td></tr>")
     assert coalesced[1:] == lines[2:]
 
 
