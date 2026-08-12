@@ -75,3 +75,14 @@ class PaginatedJobResponse(APIResponse):
     def has_previous(self) -> bool:
         """Whether a previous page exists."""
         return self.page > 1 and self.total_pages > 0
+
+
+class SystemStatsResponse(APIResponse):
+    """Aggregate counts exposed by the system analytics endpoint."""
+
+    total_companies: int = Field(ge=0)
+    total_jobs: int = Field(ge=0)
+    active_jobs: int = Field(ge=0)
+    closed_jobs: int = Field(ge=0)
+    internship_jobs: int = Field(ge=0)
+    new_grad_jobs: int = Field(ge=0)
