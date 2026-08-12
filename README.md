@@ -1,14 +1,11 @@
 # JobPing
 
 JobPing is a low-latency job discovery engine for 2026/2027 technology internships and
-new-grad roles. Phase 1 provides the local ingestion foundation: GitHub commit retrieval,
-unified-diff and Markdown parsing, normalization, dual SHA-256 hashing, Redis-backed state
-classification, and SQLAlchemy persistence with Alembic migrations.
+new-grad roles. The ingestion foundation includes GitHub commit retrieval, unified-diff and
+Markdown parsing, direct ATS scrapers (Greenhouse, Lever, Workday, Custom Tech), network interception, browser automation, normalization, dual SHA-256 hashing, Redis-backed state classification, and SQLAlchemy persistence with Alembic migrations.
 
-The current CLI fetches and classifies one Simplify commit. It does **not** persist CLI results
-to PostgreSQL yet; persistence is available through the repository layer and is covered by
-integration tests. ATS scrapers, browser automation, the event bus, API, and dashboard belong
-to later phases.
+The CLI supports fetching and classifying Simplify commits (with database persistence),
+running a persistent scheduler daemon, and auditing the database for anomalies.
 
 ## Prerequisites
 
@@ -119,7 +116,7 @@ Redis must be healthy. Process the default repository and `HEAD` commit:
 poetry run python -m app.cli run-simplify-parser
 ```
 
-Provide options explicitly when needed:
+Provide options explicitly when needed (include `--database-url` to persist parsed results):
 
 ```shell
 poetry run python -m app.cli run-simplify-parser \
@@ -129,7 +126,8 @@ poetry run python -m app.cli run-simplify-parser \
   --target-readme README.md \
   --season 2026 \
   --job-type internship \
-  --redis-url redis://localhost:6379/0
+  --redis-url redis://localhost:6379/0 \
+  --database-url postgresql+psycopg://jobping:change-me-for-local-development@localhost:5432/jobping
 ```
 
 Use `--help` for the authoritative option list. The command prints counts for `NEW_ROLE`,
@@ -140,6 +138,28 @@ GitHub rejects exhausted unauthenticated requests with HTTP 403 or 429. Set `GIT
 to a GitHub token when polling regularly; the client also reports rate-limit reset information
 when GitHub supplies it. The token option is intentionally hidden from CLI help—prefer the
 environment variable so it does not appear in shell history.
+
+## Start the Scheduler Daemon
+
+The asynchronous polling scheduler can be started to repeatedly execute extraction logic across multiple domains:
+
+```shell
+poetry run python -m app.cli start-scheduler
+```
+
+You can customize the polling intervals:
+
+```shell
+poetry run python -m app.cli start-scheduler --interval github.com=60 --interval boards.greenhouse.io=120
+```
+
+## Audit Database
+
+You can audit the integrity of the persisted data without modifying data using:
+
+```shell
+poetry run python -m app.cli audit-db
+```
 
 ## Tests and quality checks
 
@@ -158,20 +178,18 @@ poetry run ruff check --fix .
 poetry run black .
 ```
 
-## Phase 1 architecture
+## System Architecture
 
 ```text
-GitHub REST commit
-  -> README unified-diff parser
-  -> Markdown table parser and closed-role detection
-  -> Pydantic normalization
-  -> base identity hash + content state hash
-  -> atomic Redis classification
-  -> NEW_ROLE | ROLE_UPDATED | ROLE_CLOSED | NO_OP
-
-Normalized jobs
-  -> async SQLAlchemy repository
-  -> PostgreSQL companies, job_postings, and status_logs
+Extractors (Simplify GitHub, Greenhouse, Lever, Workday, Browser Automation)
+  -> Scraper Engine (Rate Limiting, User-Agent Rotation, Exponential Backoff)
+  -> RawJobPayload
+  -> Pipeline Orchestrator
+  -> Pydantic Normalization (NormalizedJob)
+  -> Dual SHA-256 Hashing (Base Identity + Content State)
+  -> Atomic Redis Classification (NEW_ROLE | ROLE_UPDATED | ROLE_CLOSED | NO_OP)
+  -> Async SQLAlchemy Repository
+  -> PostgreSQL (companies, job_postings, status_logs)
 ```
 
 Key paths:
