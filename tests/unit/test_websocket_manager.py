@@ -79,4 +79,3 @@ async def test_broadcast_evicts_only_failed_connections() -> None:
     assert manager.active_count == 1
     assert await manager.broadcast_json({"version": 2}) == 1
     assert healthy.messages == [{"version": 1}, {"version": 2}]
-

@@ -66,9 +66,7 @@ def event_json() -> str:
     )
 
 
-def build_consumer(
-    redis: FakeRedis, connections: RecordingConnections
-) -> RedisEventConsumer:
+def build_consumer(redis: FakeRedis, connections: RecordingConnections) -> RedisEventConsumer:
     return RedisEventConsumer(
         cast(Redis, redis),
         cast(ConnectionManager, connections),
