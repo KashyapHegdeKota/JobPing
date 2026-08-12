@@ -171,6 +171,13 @@ class DatabaseRepository:
                 )
             return existing
 
+    async def get_job_posting_by_base_hash(self, base_hash: str) -> JobPosting | None:
+        """Return the posting identified by its stable hash, if it exists."""
+        normalized_hash = base_hash.strip().lower()
+        if not normalized_hash:
+            raise ValueError("base hash must not be empty")
+        return await self._session.scalar(
+            select(JobPosting).where(JobPosting.base_hash == normalized_hash)
     async def bulk_upsert_job_postings(
         self, normalized_jobs: Sequence[NormalizedJob]
     ) -> list[JobPosting]:

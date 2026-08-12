@@ -8,13 +8,13 @@ from pydantic import ValidationError
 
 from app.db.repository import DatabaseRepository
 from app.schemas.job import JobType, NormalizedJob, RawJobPayload
-from app.scrapers.git_patch_parser import ChangedLine, ChangeKind, GitPatchParser
+from app.scrapers.git_patch_parser import ChangeKind, GitPatchParser
 from app.scrapers.github_client import (
     GitHubClient,
     GitHubCommitDetail,
     GitHubFilePatch,
 )
-from app.scrapers.markdown_parser import parse_markdown_table_row
+from app.scrapers.markdown_parser import MarkdownTableParser, coalesce_html_table_rows
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 from app.services.hasher import generate_base_hash, generate_content_hash
 
@@ -88,17 +88,16 @@ class SimplifyPipeline:
         """Process an already-fetched commit detail without external persistence."""
         result = PipelineResult(commit_sha=detail.sha)
         candidates: list[tuple[RawJobPayload, ChangeKind, str]] = []
-        last_company_by_file: dict[str, str] = {}
         for parsed_patch in GitPatchParser.parse_files(
             detail.files, target_readme_paths=self._targets
         ):
             filename = parsed_patch.filename or "README.md"
-            for line in _coalesce_html_rows(parsed_patch.lines):
-                source_id = f"{detail.sha}:{filename}"
+            parser = MarkdownTableParser(
+                source="simplify_github", source_id=f"{detail.sha}:{filename}"
+            )
+            for line in coalesce_html_table_rows(parsed_patch.lines):
                 try:
-                    raw = parse_markdown_table_row(
-                        line.content, source="simplify_github", source_id=source_id
-                    )
+                    raw = parser.parse(line.content)
                 except (ValidationError, ValueError) as exc:
                     result.rejected.append(RejectedRow(filename, line.content, line.kind, str(exc)))
                     continue
@@ -108,14 +107,6 @@ class SimplifyPipeline:
                             RejectedRow(filename, line.content, line.kind, "not a valid job row")
                         )
                     continue
-                company = (raw.company or "").strip()
-                if company == "↳":
-                    inherited = last_company_by_file.get(filename)
-                    if inherited is None:
-                        continue
-                    raw = raw.model_copy(update={"company": inherited})
-                else:
-                    last_company_by_file[filename] = company
                 candidates.append((raw, line.kind, filename))
 
         added_identities = {

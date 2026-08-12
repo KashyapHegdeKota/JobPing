@@ -85,6 +85,16 @@ async def test_unchanged_job_does_not_advance_updated_at(session: AsyncSession) 
     assert same_job.updated_at == previous_updated_at
 
 
+async def test_job_lookup_by_base_hash_is_owned_by_repository(session: AsyncSession) -> None:
+    repository = DatabaseRepository(session)
+    saved = await repository.save_job_posting(make_job())
+
+    found = await repository.get_job_posting_by_base_hash("  " + ("A" * 64) + "  ")
+
+    assert found is saved
+    assert await repository.get_job_posting_by_base_hash("f" * 64) is None
+    with pytest.raises(ValueError, match="must not be empty"):
+        await repository.get_job_posting_by_base_hash("  ")
 async def test_bulk_upsert_persists_multiple_jobs_and_state_transitions(
     session: AsyncSession,
 ) -> None:
