@@ -123,23 +123,6 @@ class ATSPipeline:
                     )
                     continue
                 seen.add(job.base_hash)
-                async with self._session.begin():
-                    previous = await self._repository.get_job_posting_by_base_hash(job.base_hash)
-                    state = await self._deduplicator.classify_and_update(
-                        base_hash=job.base_hash,
-                        content_hash=job.content_hash,
-                        is_closed=job.is_closed,
-                    )
-                    if state is DeduplicationState.NO_OP:
-                        result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
-                        continue
-                    previous_state = self._database_state(previous)
-                    posting = await self._repository.save_job_posting(job)
-                    new_state = "CLOSED" if job.is_closed else "OPEN"
-                    if previous_state != new_state:
-                        await self._repository.log_status_change(
-                            posting.id, previous_state, new_state
-                        )
                 state = await self._deduplicator.classify_and_update(
                     base_hash=job.base_hash,
                     content_hash=job.content_hash,

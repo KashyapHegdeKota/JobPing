@@ -95,6 +95,8 @@ async def test_job_lookup_by_base_hash_is_owned_by_repository(session: AsyncSess
     assert await repository.get_job_posting_by_base_hash("f" * 64) is None
     with pytest.raises(ValueError, match="must not be empty"):
         await repository.get_job_posting_by_base_hash("  ")
+
+
 async def test_bulk_upsert_persists_multiple_jobs_and_state_transitions(
     session: AsyncSession,
 ) -> None:

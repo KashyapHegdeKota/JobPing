@@ -178,6 +178,8 @@ class DatabaseRepository:
             raise ValueError("base hash must not be empty")
         return await self._session.scalar(
             select(JobPosting).where(JobPosting.base_hash == normalized_hash)
+        )
+
     async def bulk_upsert_job_postings(
         self, normalized_jobs: Sequence[NormalizedJob]
     ) -> list[JobPosting]:
