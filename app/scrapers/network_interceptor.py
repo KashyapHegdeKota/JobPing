@@ -97,6 +97,18 @@ class NetworkInterceptor:
         self._estimated_bytes = 0
         return payloads
 
+    async def capture(self, page: Page) -> Sequence[object]:
+        """Compatibility adapter returning payload bodies captured for ``page``.
+
+        Callers should invoke this once before navigation to attach the listener,
+        then again after navigation to drain any completed JSON responses.
+        """
+        if self._page is None:
+            self.attach(page)
+            return ()
+        await asyncio.sleep(0)
+        return tuple(item.payload for item in self.drain())
+
     async def wait_for_payload(
         self,
         *,
