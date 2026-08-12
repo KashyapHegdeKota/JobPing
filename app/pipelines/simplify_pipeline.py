@@ -1,0 +1,147 @@
+"""End-to-end orchestration for Simplify README commit patches."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from pydantic import ValidationError
+
+from app.schemas.job import JobType, NormalizedJob, RawJobPayload
+from app.scrapers.git_patch_parser import ChangeKind, GitPatchParser
+from app.scrapers.github_client import GitHubClient, GitHubCommitDetail
+from app.scrapers.markdown_parser import parse_markdown_table_row
+from app.services.deduplicator import DeduplicationState, JobDeduplicator
+from app.services.hasher import generate_base_hash, generate_content_hash
+
+
+@dataclass(frozen=True, slots=True)
+class PipelineItem:
+    """One classified job with source and commit provenance."""
+
+    state: DeduplicationState
+    job: NormalizedJob
+    raw: RawJobPayload
+    commit_sha: str
+    commit_url: str
+    filename: str
+    change_kind: ChangeKind
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedRow:
+    """A row skipped because it could not become a valid job."""
+
+    filename: str
+    content: str
+    change_kind: ChangeKind
+    reason: str
+
+
+@dataclass(slots=True)
+class PipelineResult:
+    """Commit processing results grouped by deduplication state."""
+
+    commit_sha: str
+    items: dict[DeduplicationState, list[PipelineItem]] = field(
+        default_factory=lambda: {state: [] for state in DeduplicationState}
+    )
+    rejected: list[RejectedRow] = field(default_factory=list)
+
+    def categorized(self, state: DeduplicationState) -> tuple[PipelineItem, ...]:
+        """Return immutable results for one state."""
+        return tuple(self.items[state])
+
+
+class SimplifyPipeline:
+    """Fetch, parse, normalize, hash, and atomically classify README changes."""
+
+    def __init__(
+        self,
+        github: GitHubClient,
+        deduplicator: JobDeduplicator,
+        *,
+        season: int,
+        job_type: JobType,
+        target_readme_paths: set[str] | None = None,
+    ) -> None:
+        if season not in {2026, 2027}:
+            raise ValueError("season must be 2026 or 2027")
+        self._github = github
+        self._deduplicator = deduplicator
+        self._season = season
+        self._job_type = job_type
+        self._targets = target_readme_paths
+
+    async def process_commit(self, owner: str, repo: str, ref: str) -> PipelineResult:
+        """Fetch and process one commit reference."""
+        detail = await self._github.get_commit(
+            owner, repo, ref, target_markdown_paths=self._targets
+        )
+        return await self.process_detail(detail)
+
+    async def process_detail(self, detail: GitHubCommitDetail) -> PipelineResult:
+        """Process an already-fetched commit detail without external persistence."""
+        result = PipelineResult(commit_sha=detail.sha)
+        candidates: list[tuple[RawJobPayload, ChangeKind, str]] = []
+        for parsed_patch in GitPatchParser.parse_files(
+            detail.files, target_readme_paths=self._targets
+        ):
+            filename = parsed_patch.filename or "README.md"
+            for line in parsed_patch.lines:
+                source_id = f"{detail.sha}:{filename}"
+                try:
+                    raw = parse_markdown_table_row(
+                        line.content, source="simplify_github", source_id=source_id
+                    )
+                except (ValidationError, ValueError) as exc:
+                    result.rejected.append(RejectedRow(filename, line.content, line.kind, str(exc)))
+                    continue
+                if raw is None:
+                    if line.content.lstrip().startswith("|"):
+                        result.rejected.append(
+                            RejectedRow(filename, line.content, line.kind, "not a valid job row")
+                        )
+                    continue
+                candidates.append((raw, line.kind, filename))
+
+        added_identities = {
+            generate_base_hash(raw.company or "", raw.title or "")
+            for raw, kind, _ in candidates
+            if kind is ChangeKind.ADDED
+        }
+        seen: set[tuple[str, str]] = set()
+        for raw, kind, filename in sorted(
+            candidates, key=lambda item: item[1] is ChangeKind.REMOVED
+        ):
+            base_hash = generate_base_hash(raw.company or "", raw.title or "")
+            if kind is ChangeKind.REMOVED and base_hash in added_identities:
+                continue
+            is_closed = bool(raw.is_closed) or kind is ChangeKind.REMOVED
+            try:
+                content_hash = generate_content_hash(
+                    base_hash, raw.apply_url or "", str(raw.location or ""), is_closed
+                )
+                job = NormalizedJob(
+                    company_name=raw.company,
+                    title=raw.title or "",
+                    base_hash=base_hash,
+                    content_hash=content_hash,
+                    apply_url=raw.apply_url,
+                    location=str(raw.location or ""),
+                    season=self._season,
+                    job_type=self._job_type,
+                    is_closed=is_closed,
+                )
+            except (ValidationError, ValueError) as exc:
+                result.rejected.append(RejectedRow(filename, str(raw.payload), kind, str(exc)))
+                continue
+            signature = (base_hash, content_hash)
+            if signature in seen:
+                continue
+            seen.add(signature)
+            state = await self._deduplicator.classify_and_update(
+                base_hash=base_hash, content_hash=content_hash, is_closed=is_closed
+            )
+            item = PipelineItem(state, job, raw, detail.sha, detail.html_url, filename, kind)
+            result.items[state].append(item)
+        return result

@@ -39,7 +39,8 @@ class NormalizedJob(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, use_enum_values=True)
 
-    company_id: int = Field(gt=0)
+    company_id: int | None = Field(default=None, gt=0)
+    company_name: str | None = Field(default=None, min_length=1, max_length=255)
     title: str = Field(min_length=1, max_length=500)
     base_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
