@@ -11,7 +11,7 @@ dependencies = ["sqlalchemy (>=2.0,<3.0)", "alembic (>=1.16,<2.0)", "psycopg[bin
 packages = [{ include = "app" }]
 
 [dependency-groups]
-dev = ["black>=26.5.1,<27", "ruff>=0.12,<0.16", "pytest (>=8.4,<10)"]
+dev = ["black>=26.5.1,<27", "ruff>=0.12,<0.16", "pytest (>=8.4,<10)", "pytest-asyncio (>=1.1,<2)"]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -33,3 +33,7 @@ select = ["E", "F", "I", "UP", "B", "ANN"]
 quote-style = "double"
 indent-style = "space"
 line-ending = "auto"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
