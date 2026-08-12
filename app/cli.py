@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from app.db.repository import DatabaseRepository
 from app.pipelines.simplify_pipeline import PipelineResult, SimplifyPipeline
+from app.scheduler import PollTarget, SchedulerDaemon, parse_intervals
 from app.schemas.job import JobType
 from app.scrapers.github_client import GitHubClient
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
@@ -218,6 +219,52 @@ def run_simplify_parser(
         typer.echo(_summary(result))
         for line in _job_lines(result):
             typer.echo(line)
+
+
+async def _serve_scheduler(intervals: list[str]) -> None:
+    """Build the configured daemon and wait until interrupted."""
+    daemon = SchedulerDaemon()
+    for domain, seconds in parse_intervals(intervals).items():
+
+        async def placeholder(target: str = domain) -> None:
+            # Source-specific callbacks are registered as their production wiring lands.
+            await asyncio.sleep(0)
+
+        daemon.register(PollTarget(domain, seconds, placeholder))
+    await daemon.serve()
+
+
+@app.command("start-scheduler")
+def start_scheduler(
+    interval: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--interval",
+            help="Repeatable DOMAIN=SECONDS polling interval.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option(help="Validate and print configuration without starting.")
+    ] = False,
+) -> None:
+    """Start the UTC asynchronous polling scheduler."""
+    try:
+        interval = interval or [
+            "github.com=60",
+            "boards.greenhouse.io=120",
+            "api.lever.co=120",
+        ]
+        parsed = parse_intervals(interval)
+        if dry_run:
+            for domain, seconds in parsed.items():
+                typer.echo(f"{domain}={seconds:g}s")
+            return
+        _asyncio_run(_serve_scheduler(interval))
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        typer.echo("Scheduler stopped.")
+    except ValueError as exc:
+        typer.echo(f"Scheduler configuration failed: {exc}", err=True)
+        raise typer.Exit(code=2) from None
 
 
 def main() -> None:
