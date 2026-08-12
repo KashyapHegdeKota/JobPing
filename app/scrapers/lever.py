@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping, Sequence
 from urllib.parse import quote
 
@@ -13,6 +14,7 @@ from app.utils.resilience import external_retry
 
 _API_ROOT = "https://api.lever.co/v0/postings"
 _DEFAULT_TIMEOUT = httpx.Timeout(10.0, connect=5.0)
+_LOGGER = logging.getLogger(__name__)
 
 
 class LeverError(RuntimeError):
@@ -68,11 +70,19 @@ class LeverScraper(BaseScraper):
             raise LeverResponseError("Lever response must be a JSON array")
 
         postings: list[RawJobPayload] = []
-        for entry in data:
-            mapped = _map_posting(entry, company=site)
-            if mapped is not None:
-                postings.append(mapped)
-        return tuple(postings)
+        try:
+            for entry in data:
+                try:
+                    mapped = _map_posting(entry, company=site)
+                except Exception:
+                    _LOGGER.exception("lever.job.mapping_failed", extra={"site": site})
+                    continue
+                if mapped is not None:
+                    postings.append(mapped)
+            return tuple(postings)
+        finally:
+            if self._owns_client:
+                await self.aclose()
 
     @external_retry
     async def _request_site(self, url: str, **kwargs: object) -> httpx.Response:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Mapping, Sequence
 from typing import Protocol
 from urllib.parse import urljoin, urlparse
@@ -13,6 +14,8 @@ from app.schemas.job import RawJobPayload
 from app.scrapers.base import BaseScraper, ScraperError
 from app.scrapers.proxy import ProxyEndpoint, ProxyManager
 from app.utils.resilience import external_retry
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class ResponseLike(Protocol):
@@ -102,6 +105,8 @@ class CustomTechScraper(BaseScraper):
             raise
         finally:
             await page.close()
+            if self._owns_client:
+                await self.aclose()
 
     @external_retry
     async def _navigate(self, page: PageLike, url: str) -> ResponseLike | None:
@@ -111,7 +116,11 @@ class CustomTechScraper(BaseScraper):
         jobs: list[RawJobPayload] = []
         seen: set[str] = set()
         for record in records:
-            mapped = self.map_record(record)
+            try:
+                mapped = self.map_record(record)
+            except Exception:
+                _LOGGER.exception("custom_portal.job.mapping_failed", extra={"source": self.source})
+                continue
             if mapped is None:
                 continue
             identity = mapped.source_id or mapped.apply_url or ""

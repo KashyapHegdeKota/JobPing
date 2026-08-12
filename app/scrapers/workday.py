@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Protocol
@@ -11,6 +12,8 @@ from urllib.parse import urljoin
 from app.schemas.job import RawJobPayload
 from app.scrapers.base import BaseScraper, ScraperError
 from app.utils.resilience import external_retry
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class Locator(Protocol):
@@ -94,6 +97,8 @@ class WorkdayScraper(BaseScraper):
             raise WorkdayScraperError(f"Workday browser scrape failed for {self.company}") from exc
         finally:
             await page.close()
+            if self._owns_client:
+                await self.aclose()
 
     @external_retry
     async def _navigate(self, page: Page, url: str) -> object:
@@ -135,6 +140,9 @@ class WorkdayScraper(BaseScraper):
             except asyncio.CancelledError:
                 raise
             except Exception:
+                _LOGGER.exception(
+                    "workday.job.mapping_failed", extra={"company": self.company, "index": index}
+                )
                 continue
         return jobs
 

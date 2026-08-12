@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Mapping
 from typing import Self
@@ -15,6 +16,7 @@ from app.utils.resilience import external_retry
 
 GREENHOUSE_API_URL = "https://boards-api.greenhouse.io/v1/boards"
 _WHITESPACE = re.compile(r"\s+")
+_LOGGER = logging.getLogger(__name__)
 
 
 class GreenhouseError(RuntimeError):
@@ -91,11 +93,19 @@ class GreenhouseScraper(BaseScraper):
             raise GreenhouseError("Greenhouse response is missing a jobs list")
 
         jobs: list[RawJobPayload] = []
-        for item in body["jobs"]:
-            mapped = self._map_job(board_token, item)
-            if mapped is not None:
-                jobs.append(mapped)
-        return jobs
+        try:
+            for item in body["jobs"]:
+                try:
+                    mapped = self._map_job(board_token, item)
+                except Exception:
+                    _LOGGER.exception("greenhouse.job.mapping_failed", extra={"board": board_token})
+                    continue
+                if mapped is not None:
+                    jobs.append(mapped)
+            return jobs
+        finally:
+            if self._owns_client:
+                await self.aclose()
 
     @external_retry
     async def _request_board(self, url: str, **kwargs: object) -> httpx.Response:
