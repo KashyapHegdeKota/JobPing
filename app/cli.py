@@ -99,7 +99,7 @@ async def _process_commits(
                 if commit_sha:
                     refs = (commit_sha,)
                 else:
-                    commits = await github.list_commits(owner, repo, per_page=limit)
+                    commits = await github.list_commits(owner, repo, ref="dev", per_page=limit)
                     refs = tuple(commit.sha for commit in commits)
                 results = tuple([await pipeline.process_commit(owner, repo, ref) for ref in refs])
             if database_url:
@@ -426,16 +426,64 @@ def run_simplify_full_sync(
     typer.echo(f"Bulk upsert complete: parsed={parsed} persisted={persisted}")
 
 
-async def _serve_scheduler(intervals: list[str]) -> None:
-    """Build the configured daemon and wait until interrupted."""
-    daemon = SchedulerDaemon()
+def _scheduler_targets(
+    intervals: list[str],
+    *,
+    redis_url: str,
+    github_token: str | None,
+    database_url: str | None,
+) -> tuple[PollTarget, ...]:
+    """Build scheduler callbacks, including both live Simplify repositories."""
+    targets: list[PollTarget] = []
     for domain, seconds in parse_intervals(intervals).items():
+        if domain == "github.com":
+            for repo in SIMPLIFY_REPOSITORIES:
+
+                async def poll_simplify(repository: str = repo) -> None:
+                    await _process_commits(
+                        owner="SimplifyJobs",
+                        repo=repository,
+                        commit_sha=None,
+                        limit=1,
+                        target_readme="README.md",
+                        season=2027,
+                        job_type=(
+                            JobType.NEW_GRAD
+                            if repository == "New-Grad-Positions"
+                            else JobType.INTERNSHIP
+                        ),
+                        redis_url=redis_url,
+                        github_token=github_token,
+                        database_url=database_url,
+                    )
+
+                targets.append(PollTarget(f"github.com/{repo}@dev", seconds, poll_simplify))
+            continue
 
         async def placeholder(target: str = domain) -> None:
             # Source-specific callbacks are registered as their production wiring lands.
             await asyncio.sleep(0)
 
-        daemon.register(PollTarget(domain, seconds, placeholder))
+        targets.append(PollTarget(domain, seconds, placeholder))
+    return tuple(targets)
+
+
+async def _serve_scheduler(
+    intervals: list[str],
+    *,
+    redis_url: str,
+    github_token: str | None,
+    database_url: str | None,
+) -> None:
+    """Build the configured daemon and wait until interrupted."""
+    daemon = SchedulerDaemon()
+    for target in _scheduler_targets(
+        intervals,
+        redis_url=redis_url,
+        github_token=github_token,
+        database_url=database_url,
+    ):
+        daemon.register(target)
     await daemon.serve()
 
 
@@ -455,6 +503,16 @@ def start_scheduler(
             help="Validate and print configuration without starting.",
         ),
     ] = False,
+    redis_url: Annotated[
+        str, typer.Option(envvar="REDIS_URL", help="Redis connection URL.")
+    ] = "redis://localhost:6379/0",
+    github_token: Annotated[
+        str | None,
+        typer.Option(envvar="GITHUB_TOKEN", help="Optional GitHub API token.", hidden=True),
+    ] = None,
+    database_url: Annotated[
+        str | None, typer.Option(envvar="DATABASE_URL", help="Async SQLAlchemy database URL.")
+    ] = None,
 ) -> None:
     """Start the UTC asynchronous polling scheduler."""
     try:
@@ -467,8 +525,18 @@ def start_scheduler(
         if dry_run:
             for domain, seconds in parsed.items():
                 typer.echo(f"{domain}={seconds:g}s")
+                if domain == "github.com":
+                    for repo in SIMPLIFY_REPOSITORIES:
+                        typer.echo(f"  SimplifyJobs/{repo}@dev")
             return
-        _asyncio_run(_serve_scheduler(interval))
+        _asyncio_run(
+            _serve_scheduler(
+                interval,
+                redis_url=redis_url,
+                github_token=github_token,
+                database_url=database_url or os.environ.get("DATABASE_URL"),
+            )
+        )
     except (KeyboardInterrupt, asyncio.CancelledError):
         typer.echo("Scheduler stopped.")
     except ValueError as exc:

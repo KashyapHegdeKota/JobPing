@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from unittest.mock import Mock
 
 import pytest
+from app import cli
 from app.cli import app
 from app.scheduler import PollTarget, SchedulerDaemon, parse_intervals
 from click import unstyle
@@ -103,3 +104,35 @@ def test_cli_help_and_dry_run_do_not_start_daemon() -> None:
     )
     assert result.exit_code == 0
     assert "github.com=15s" in result.output
+    assert "SimplifyJobs/Summer2027-Internships@dev" in result.output
+    assert "SimplifyJobs/New-Grad-Positions@dev" in result.output
+
+
+async def test_scheduler_github_interval_polls_both_dev_repositories(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_process(**kwargs: object) -> tuple[object, ...]:
+        calls.append(kwargs)
+        return ()
+
+    monkeypatch.setattr(cli, "_process_commits", fake_process)
+    targets = cli._scheduler_targets(
+        ["github.com=60"],
+        redis_url="redis://localhost:6379/0",
+        github_token=None,
+        database_url="sqlite+aiosqlite:///jobs.db",
+    )
+
+    assert [target.name for target in targets] == [
+        "github.com/Summer2027-Internships@dev",
+        "github.com/New-Grad-Positions@dev",
+    ]
+    for target in targets:
+        await target.callback()
+    assert [call["repo"] for call in calls] == list(cli.SIMPLIFY_REPOSITORIES)
+    assert [call["job_type"] for call in calls] == [
+        cli.JobType.INTERNSHIP,
+        cli.JobType.NEW_GRAD,
+    ]
