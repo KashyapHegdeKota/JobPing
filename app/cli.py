@@ -23,6 +23,7 @@ from app.services.db_audit import AuditReport, DatabaseAuditService
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 
 app = typer.Typer(help="Run JobPing ingestion tools.", no_args_is_help=True)
+SIMPLIFY_REPOSITORIES = ("Summer2027-Internships", "New-Grad-Positions")
 
 
 def _asyncio_run[T](awaitable: Awaitable[T]) -> T:
@@ -98,7 +99,7 @@ async def _process_commits(
                 if commit_sha:
                     refs = (commit_sha,)
                 else:
-                    commits = await github.list_commits(owner, repo, per_page=limit)
+                    commits = await github.list_commits(owner, repo, ref="dev", per_page=limit)
                     refs = tuple(commit.sha for commit in commits)
                 results = tuple([await pipeline.process_commit(owner, repo, ref) for ref in refs])
             if database_url:
@@ -143,6 +144,43 @@ async def _process_full_sync_files(
             results = await pipeline.process_full_sync_files(owner, repo, target_readmes, ref=ref)
             persisted = await _persist_results(results, database_url)
             return results, persisted
+
+
+async def _process_full_sync_repositories(
+    *,
+    owner: str,
+    repos: tuple[str, ...],
+    ref: str,
+    target_readmes: tuple[str, ...],
+    season: int,
+    redis_url: str,
+    github_token: str | None,
+    database_url: str,
+) -> tuple[tuple[tuple[str, str, PipelineResult], ...], int]:
+    """Fetch both current-cycle repositories and persist one combined batch."""
+    async with GitHubClient(token=github_token) as github:
+        async with JobDeduplicator.from_url(redis_url) as deduplicator:
+            labeled_results: list[tuple[str, str, PipelineResult]] = []
+            for repo in repos:
+                job_type = JobType.NEW_GRAD if repo == "New-Grad-Positions" else JobType.INTERNSHIP
+                pipeline = SimplifyPipeline(
+                    github,
+                    deduplicator,
+                    season=season,
+                    job_type=job_type,
+                    target_readme_paths=set(target_readmes),
+                )
+                results = await pipeline.process_full_sync_files(
+                    owner, repo, target_readmes, ref=ref
+                )
+                labeled_results.extend(
+                    (repo, target, result)
+                    for target, result in zip(target_readmes, results, strict=True)
+                )
+            persisted = await _persist_results(
+                tuple(result for _, _, result in labeled_results), database_url
+            )
+            return tuple(labeled_results), persisted
 
 
 def _summary(result: PipelineResult) -> str:
@@ -228,7 +266,7 @@ def run_simplify_parser(
     ] = "SimplifyJobs",
     repo: Annotated[
         str, typer.Option(envvar="GITHUB_REPO", help="GitHub repository name.")
-    ] = "Summer2026-Internships",
+    ] = "Summer2027-Internships",
     commit_sha: Annotated[
         str | None,
         typer.Option(
@@ -251,7 +289,7 @@ def run_simplify_parser(
     ] = "README.md",
     season: Annotated[
         int, typer.Option(min=2026, max=2027, envvar="JOB_SEASON", help="Hiring season.")
-    ] = 2026,
+    ] = 2027,
     job_type: Annotated[
         JobType, typer.Option(envvar="JOB_TYPE", help="Job category to assign.")
     ] = JobType.INTERNSHIP,
@@ -302,8 +340,12 @@ def run_simplify_full_sync(
         str, typer.Option(envvar="GITHUB_OWNER", help="GitHub repository owner.")
     ] = "SimplifyJobs",
     repo: Annotated[
-        str, typer.Option(envvar="GITHUB_REPO", help="GitHub repository name.")
-    ] = "Summer2026-Internships",
+        list[str] | None,
+        typer.Option(
+            "--repo",
+            help="Repeat for each repository; defaults to current intern and new-grad cycles.",
+        ),
+    ] = None,
     ref: Annotated[
         str,
         typer.Option(
@@ -321,10 +363,7 @@ def run_simplify_full_sync(
     ] = None,
     season: Annotated[
         int, typer.Option(min=2026, max=2027, envvar="JOB_SEASON", help="Hiring season.")
-    ] = 2026,
-    job_type: Annotated[
-        JobType, typer.Option(envvar="JOB_TYPE", help="Job category to assign.")
-    ] = JobType.INTERNSHIP,
+    ] = 2027,
     redis_url: Annotated[
         str, typer.Option(envvar="REDIS_URL", help="Redis connection URL.")
     ] = "redis://localhost:6379/0",
@@ -345,19 +384,27 @@ def run_simplify_full_sync(
     targets = tuple(
         target_readme or [item.strip() for item in env_targets.split(",") if item.strip()]
     )
+    env_repositories = os.environ.get("SIMPLIFY_REPOSITORIES") or os.environ.get("GITHUB_REPO")
+    repositories = tuple(
+        repo
+        or (
+            [item.strip() for item in env_repositories.split(",") if item.strip()]
+            if env_repositories
+            else SIMPLIFY_REPOSITORIES
+        )
+    )
     typer.echo(
-        f"Starting full sync from {owner}/{repo}@{ref}: "
+        f"Starting full sync from {owner}/{{{', '.join(repositories)}}}@{ref}: "
         f"{', '.join(_console_safe(path) for path in targets)}"
     )
     try:
-        results, persisted = _asyncio_run(
-            _process_full_sync_files(
+        labeled_results, persisted = _asyncio_run(
+            _process_full_sync_repositories(
                 owner=owner,
-                repo=repo,
+                repos=repositories,
                 ref=ref,
                 target_readmes=targets,
                 season=season,
-                job_type=job_type,
                 redis_url=redis_url,
                 github_token=github_token,
                 database_url=resolved_database_url,
@@ -369,24 +416,74 @@ def run_simplify_full_sync(
     except Exception as exc:
         typer.echo(f"Simplify full sync failed: {type(exc).__name__}: {exc}", err=True)
         raise typer.Exit(code=1) from None
-    for target, result in zip(targets, results, strict=True):
-        typer.echo(f"{_console_safe(target)}: {_summary(result)}")
+    for repository, target, result in labeled_results:
+        typer.echo(f"{repository}/{_console_safe(target)}: {_summary(result)}")
     parsed = sum(
-        len(result.categorized(state)) for result in results for state in DeduplicationState
+        len(result.categorized(state))
+        for _, _, result in labeled_results
+        for state in DeduplicationState
     )
     typer.echo(f"Bulk upsert complete: parsed={parsed} persisted={persisted}")
 
 
-async def _serve_scheduler(intervals: list[str]) -> None:
-    """Build the configured daemon and wait until interrupted."""
-    daemon = SchedulerDaemon()
+def _scheduler_targets(
+    intervals: list[str],
+    *,
+    redis_url: str,
+    github_token: str | None,
+    database_url: str | None,
+) -> tuple[PollTarget, ...]:
+    """Build scheduler callbacks, including both live Simplify repositories."""
+    targets: list[PollTarget] = []
     for domain, seconds in parse_intervals(intervals).items():
+        if domain == "github.com":
+            for repo in SIMPLIFY_REPOSITORIES:
+
+                async def poll_simplify(repository: str = repo) -> None:
+                    await _process_commits(
+                        owner="SimplifyJobs",
+                        repo=repository,
+                        commit_sha=None,
+                        limit=1,
+                        target_readme="README.md",
+                        season=2027,
+                        job_type=(
+                            JobType.NEW_GRAD
+                            if repository == "New-Grad-Positions"
+                            else JobType.INTERNSHIP
+                        ),
+                        redis_url=redis_url,
+                        github_token=github_token,
+                        database_url=database_url,
+                    )
+
+                targets.append(PollTarget(f"github.com/{repo}@dev", seconds, poll_simplify))
+            continue
 
         async def placeholder(target: str = domain) -> None:
             # Source-specific callbacks are registered as their production wiring lands.
             await asyncio.sleep(0)
 
-        daemon.register(PollTarget(domain, seconds, placeholder))
+        targets.append(PollTarget(domain, seconds, placeholder))
+    return tuple(targets)
+
+
+async def _serve_scheduler(
+    intervals: list[str],
+    *,
+    redis_url: str,
+    github_token: str | None,
+    database_url: str | None,
+) -> None:
+    """Build the configured daemon and wait until interrupted."""
+    daemon = SchedulerDaemon()
+    for target in _scheduler_targets(
+        intervals,
+        redis_url=redis_url,
+        github_token=github_token,
+        database_url=database_url,
+    ):
+        daemon.register(target)
     await daemon.serve()
 
 
@@ -406,6 +503,16 @@ def start_scheduler(
             help="Validate and print configuration without starting.",
         ),
     ] = False,
+    redis_url: Annotated[
+        str, typer.Option(envvar="REDIS_URL", help="Redis connection URL.")
+    ] = "redis://localhost:6379/0",
+    github_token: Annotated[
+        str | None,
+        typer.Option(envvar="GITHUB_TOKEN", help="Optional GitHub API token.", hidden=True),
+    ] = None,
+    database_url: Annotated[
+        str | None, typer.Option(envvar="DATABASE_URL", help="Async SQLAlchemy database URL.")
+    ] = None,
 ) -> None:
     """Start the UTC asynchronous polling scheduler."""
     try:
@@ -418,8 +525,18 @@ def start_scheduler(
         if dry_run:
             for domain, seconds in parsed.items():
                 typer.echo(f"{domain}={seconds:g}s")
+                if domain == "github.com":
+                    for repo in SIMPLIFY_REPOSITORIES:
+                        typer.echo(f"  SimplifyJobs/{repo}@dev")
             return
-        _asyncio_run(_serve_scheduler(interval))
+        _asyncio_run(
+            _serve_scheduler(
+                interval,
+                redis_url=redis_url,
+                github_token=github_token,
+                database_url=database_url or os.environ.get("DATABASE_URL"),
+            )
+        )
     except (KeyboardInterrupt, asyncio.CancelledError):
         typer.echo("Scheduler stopped.")
     except ValueError as exc:
