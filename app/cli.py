@@ -23,6 +23,7 @@ from app.services.db_audit import AuditReport, DatabaseAuditService
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 
 app = typer.Typer(help="Run JobPing ingestion tools.", no_args_is_help=True)
+SIMPLIFY_REPOSITORIES = ("Summer2027-Internships", "New-Grad-Positions")
 
 
 def _asyncio_run[T](awaitable: Awaitable[T]) -> T:
@@ -145,6 +146,43 @@ async def _process_full_sync_files(
             return results, persisted
 
 
+async def _process_full_sync_repositories(
+    *,
+    owner: str,
+    repos: tuple[str, ...],
+    ref: str,
+    target_readmes: tuple[str, ...],
+    season: int,
+    redis_url: str,
+    github_token: str | None,
+    database_url: str,
+) -> tuple[tuple[tuple[str, str, PipelineResult], ...], int]:
+    """Fetch both current-cycle repositories and persist one combined batch."""
+    async with GitHubClient(token=github_token) as github:
+        async with JobDeduplicator.from_url(redis_url) as deduplicator:
+            labeled_results: list[tuple[str, str, PipelineResult]] = []
+            for repo in repos:
+                job_type = JobType.NEW_GRAD if repo == "New-Grad-Positions" else JobType.INTERNSHIP
+                pipeline = SimplifyPipeline(
+                    github,
+                    deduplicator,
+                    season=season,
+                    job_type=job_type,
+                    target_readme_paths=set(target_readmes),
+                )
+                results = await pipeline.process_full_sync_files(
+                    owner, repo, target_readmes, ref=ref
+                )
+                labeled_results.extend(
+                    (repo, target, result)
+                    for target, result in zip(target_readmes, results, strict=True)
+                )
+            persisted = await _persist_results(
+                tuple(result for _, _, result in labeled_results), database_url
+            )
+            return tuple(labeled_results), persisted
+
+
 def _summary(result: PipelineResult) -> str:
     counts = " ".join(
         f"{state.value}={len(result.categorized(state))}" for state in DeduplicationState
@@ -228,7 +266,7 @@ def run_simplify_parser(
     ] = "SimplifyJobs",
     repo: Annotated[
         str, typer.Option(envvar="GITHUB_REPO", help="GitHub repository name.")
-    ] = "Summer2026-Internships",
+    ] = "Summer2027-Internships",
     commit_sha: Annotated[
         str | None,
         typer.Option(
@@ -251,7 +289,7 @@ def run_simplify_parser(
     ] = "README.md",
     season: Annotated[
         int, typer.Option(min=2026, max=2027, envvar="JOB_SEASON", help="Hiring season.")
-    ] = 2026,
+    ] = 2027,
     job_type: Annotated[
         JobType, typer.Option(envvar="JOB_TYPE", help="Job category to assign.")
     ] = JobType.INTERNSHIP,
@@ -302,8 +340,12 @@ def run_simplify_full_sync(
         str, typer.Option(envvar="GITHUB_OWNER", help="GitHub repository owner.")
     ] = "SimplifyJobs",
     repo: Annotated[
-        str, typer.Option(envvar="GITHUB_REPO", help="GitHub repository name.")
-    ] = "Summer2026-Internships",
+        list[str] | None,
+        typer.Option(
+            "--repo",
+            help="Repeat for each repository; defaults to current intern and new-grad cycles.",
+        ),
+    ] = None,
     ref: Annotated[
         str,
         typer.Option(
@@ -321,10 +363,7 @@ def run_simplify_full_sync(
     ] = None,
     season: Annotated[
         int, typer.Option(min=2026, max=2027, envvar="JOB_SEASON", help="Hiring season.")
-    ] = 2026,
-    job_type: Annotated[
-        JobType, typer.Option(envvar="JOB_TYPE", help="Job category to assign.")
-    ] = JobType.INTERNSHIP,
+    ] = 2027,
     redis_url: Annotated[
         str, typer.Option(envvar="REDIS_URL", help="Redis connection URL.")
     ] = "redis://localhost:6379/0",
@@ -345,19 +384,27 @@ def run_simplify_full_sync(
     targets = tuple(
         target_readme or [item.strip() for item in env_targets.split(",") if item.strip()]
     )
+    env_repositories = os.environ.get("SIMPLIFY_REPOSITORIES") or os.environ.get("GITHUB_REPO")
+    repositories = tuple(
+        repo
+        or (
+            [item.strip() for item in env_repositories.split(",") if item.strip()]
+            if env_repositories
+            else SIMPLIFY_REPOSITORIES
+        )
+    )
     typer.echo(
-        f"Starting full sync from {owner}/{repo}@{ref}: "
+        f"Starting full sync from {owner}/{{{', '.join(repositories)}}}@{ref}: "
         f"{', '.join(_console_safe(path) for path in targets)}"
     )
     try:
-        results, persisted = _asyncio_run(
-            _process_full_sync_files(
+        labeled_results, persisted = _asyncio_run(
+            _process_full_sync_repositories(
                 owner=owner,
-                repo=repo,
+                repos=repositories,
                 ref=ref,
                 target_readmes=targets,
                 season=season,
-                job_type=job_type,
                 redis_url=redis_url,
                 github_token=github_token,
                 database_url=resolved_database_url,
@@ -369,10 +416,12 @@ def run_simplify_full_sync(
     except Exception as exc:
         typer.echo(f"Simplify full sync failed: {type(exc).__name__}: {exc}", err=True)
         raise typer.Exit(code=1) from None
-    for target, result in zip(targets, results, strict=True):
-        typer.echo(f"{_console_safe(target)}: {_summary(result)}")
+    for repository, target, result in labeled_results:
+        typer.echo(f"{repository}/{_console_safe(target)}: {_summary(result)}")
     parsed = sum(
-        len(result.categorized(state)) for result in results for state in DeduplicationState
+        len(result.categorized(state))
+        for _, _, result in labeled_results
+        for state in DeduplicationState
     )
     typer.echo(f"Bulk upsert complete: parsed={parsed} persisted={persisted}")
 

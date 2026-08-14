@@ -104,17 +104,25 @@ def test_run_simplify_full_sync_fetches_targets_and_reports_bulk_insert(
 
     async def fake_full_sync(
         **kwargs: object,
-    ) -> tuple[tuple[PipelineResult, ...], int]:
+    ) -> tuple[tuple[tuple[str, str, PipelineResult], ...], int]:
         captured.update(kwargs)
         return (
             (
-                PipelineResult(commit_sha="readme-sha"),
-                PipelineResult(commit_sha="off-season-sha"),
+                (
+                    "Summer2027-Internships",
+                    "README.md",
+                    PipelineResult(commit_sha="readme-sha"),
+                ),
+                (
+                    "Summer2027-Internships",
+                    "README-Off-Season.md",
+                    PipelineResult(commit_sha="off-season-sha"),
+                ),
             ),
             481,
         )
 
-    monkeypatch.setattr(cli, "_process_full_sync_files", fake_full_sync)
+    monkeypatch.setattr(cli, "_process_full_sync_repositories", fake_full_sync)
     result = runner.invoke(
         cli.app,
         [
@@ -135,6 +143,30 @@ def test_run_simplify_full_sync_fetches_targets_and_reports_bulk_insert(
     assert "Starting full sync" in result.stdout
     assert "Bulk upsert complete: parsed=0 persisted=481" in result.stdout
     assert captured["target_readmes"] == ("README.md", "README-Off-Season.md")
+    assert captured["repos"] == ("Summer2027-Internships",)
+    assert captured["ref"] == "dev"
+
+
+def test_run_simplify_full_sync_defaults_to_both_current_cycle_repositories(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_full_sync(
+        **kwargs: object,
+    ) -> tuple[tuple[tuple[str, str, PipelineResult], ...], int]:
+        captured.update(kwargs)
+        return (), 0
+
+    monkeypatch.setattr(cli, "_process_full_sync_repositories", fake_full_sync)
+    result = runner.invoke(
+        cli.app,
+        ["run-simplify-full-sync", "--database-url", "sqlite+aiosqlite:///jobs.db"],
+        env={"GITHUB_REPO": "", "SIMPLIFY_REPOSITORIES": ""},
+    )
+
+    assert result.exit_code == 0
+    assert captured["repos"] == cli.SIMPLIFY_REPOSITORIES
     assert captured["ref"] == "dev"
 
 

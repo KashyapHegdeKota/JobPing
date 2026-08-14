@@ -53,7 +53,8 @@ deployed environment.
 | `REDIS_URL` | `redis://localhost:6379/0` | CLI/deduplicator | Redis connection and logical database used for deduplication state. |
 | `GITHUB_TOKEN` | unset | CLI/GitHub client | Optional bearer token. Recommended to increase GitHub API limits; never commit it. |
 | `GITHUB_OWNER` | `SimplifyJobs` | CLI | Target repository owner. |
-| `GITHUB_REPO` | `Summer2026-Internships` | CLI | Target repository name. |
+| `GITHUB_REPO` | `Summer2027-Internships` | incremental CLI | Target repository name. |
+| `SIMPLIFY_REPOSITORIES` | `Summer2027-Internships,New-Grad-Positions` | full-sync CLI | Current-cycle repositories fetched from `dev`. |
 | `GITHUB_REF` | `HEAD` | CLI | Commit SHA, tag, or branch to process. |
 | `SIMPLIFY_FULL_SYNC_REF` | `dev` | full-sync CLI | Simplify's live-updates branch used for raw-file bootstrap reads; intentionally separate from GitHub Actions' reserved `GITHUB_REF`. |
 | `TARGET_README` | `README.md` | CLI | Exact Markdown path inspected in the commit. |
@@ -140,7 +141,8 @@ Bootstrap PostgreSQL directly from the current raw files on Simplify's live `dev
 
 ```shell
 poetry run python -m app.cli run-simplify-full-sync \
-  --repo Summer2026-Internships \
+  --repo Summer2027-Internships \
+  --repo New-Grad-Positions \
   --target-readme README.md \
   --target-readme README-Off-Season.md \
   --database-url postgresql+psycopg://jobping:change-me-for-local-development@localhost:5432/jobping
