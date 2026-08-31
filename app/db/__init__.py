@@ -1,6 +1,29 @@
 """Database models and persistence primitives."""
 
-from app.db.models import Base, Company, JobPosting, JobType, StatusLog
+from app.db.models import (
+    ApplicationAnswer,
+    ApplicationAttempt,
+    ApplicationFailure,
+    ApplicationStatus,
+    Base,
+    Company,
+    JobPosting,
+    JobType,
+    StatusLog,
+    VerificationType,
+)
 from app.db.repository import DatabaseRepository
 
-__all__ = ["Base", "Company", "DatabaseRepository", "JobPosting", "JobType", "StatusLog"]
+__all__ = [
+    "ApplicationAnswer",
+    "ApplicationAttempt",
+    "ApplicationFailure",
+    "ApplicationStatus",
+    "Base",
+    "Company",
+    "DatabaseRepository",
+    "JobPosting",
+    "JobType",
+    "StatusLog",
+    "VerificationType",
+]

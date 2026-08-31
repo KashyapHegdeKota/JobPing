@@ -14,15 +14,24 @@ import typer
 import uvicorn
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+from app.applications.models import ApplicationCheckpoint
+from app.applications.service import ApplicationService
+from app.db.models import ApplicationAttempt, ApplicationStatus
 from app.db.repository import DatabaseRepository
 from app.pipelines.simplify_pipeline import PipelineResult, SimplifyPipeline
 from app.scheduler import PollTarget, SchedulerDaemon, parse_intervals
+from app.schemas.application import ApplicationForm
 from app.schemas.job import JobType
+from app.scrapers.browser import BrowserManager
 from app.scrapers.github_client import GitHubClient
 from app.services.db_audit import AuditReport, DatabaseAuditService
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 
 app = typer.Typer(help="Run JobPing ingestion tools.", no_args_is_help=True)
+applications_app = typer.Typer(
+    help="Inspect and control application checkpoints.", no_args_is_help=True
+)
+app.add_typer(applications_app, name="applications")
 SIMPLIFY_REPOSITORIES = ("Summer2027-Internships", "New-Grad-Positions")
 
 
@@ -210,6 +219,237 @@ def _console_safe(value: str) -> str:
 
     encoding = sys.stdout.encoding or "utf-8"
     return value.encode(encoding, errors="replace").decode(encoding)
+
+
+async def _inspect_application(job_id: int, database_url: str, headless: bool) -> ApplicationForm:
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions() as session:
+            repository = DatabaseRepository(session)
+            browser = BrowserManager(headless=headless, block_resources=frozenset())
+            return await ApplicationService(repository, browser).inspect_job(job_id)
+    finally:
+        await engine.dispose()
+
+
+async def _application_queue(database_url: str) -> list[ApplicationAttempt]:
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions() as session:
+            async with session.begin():
+                return await DatabaseRepository(session).list_application_queue()
+    finally:
+        await engine.dispose()
+
+
+async def _application_verification(database_url: str) -> list[ApplicationAttempt]:
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions() as session:
+            return await DatabaseRepository(session).list_verification_required()
+    finally:
+        await engine.dispose()
+
+
+async def _application_status(job_id: int, database_url: str) -> ApplicationCheckpoint:
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions() as session:
+            async with session.begin():
+                return await ApplicationService(DatabaseRepository(session)).get_checkpoint(job_id)
+    finally:
+        await engine.dispose()
+
+
+async def _application_reset(job_id: int, database_url: str) -> ApplicationAttempt:
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions() as session:
+            async with session.begin():
+                return await ApplicationService(DatabaseRepository(session)).reset_application(
+                    job_id
+                )
+    finally:
+        await engine.dispose()
+
+
+def _database_or_exit(database_url: str | None) -> str:
+    url = database_url or os.environ.get("DATABASE_URL")
+    if not url:
+        typer.echo("DATABASE_URL is required.", err=True)
+        raise typer.Exit(code=2)
+    return url
+
+
+@applications_app.command("queue")
+def applications_queue(
+    database_url: Annotated[str | None, typer.Option(envvar="DATABASE_URL")] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable JSON.")
+    ] = False,
+) -> None:
+    """List newest open jobs eligible for application work."""
+    try:
+        attempts = _asyncio_run(_application_queue(_database_or_exit(database_url)))
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.echo(f"Application queue failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    rows = [
+        {
+            "job_id": attempt.job.id,
+            "company": attempt.job.company.name,
+            "title": attempt.job.title,
+            "status": ApplicationStatus(attempt.status).value,
+        }
+        for attempt in attempts
+    ]
+    if json_output:
+        typer.echo(json.dumps(rows, separators=(",", ":")))
+        return
+    typer.echo("Queued Applications")
+    for row in rows:
+        typer.echo(f"\n{row['job_id']}  {row['company']}    {row['title']}")
+
+
+@applications_app.command("verification")
+def applications_verification(
+    database_url: Annotated[str | None, typer.Option(envvar="DATABASE_URL")] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable JSON.")
+    ] = False,
+) -> None:
+    """List applications paused for manual verification."""
+    try:
+        attempts = _asyncio_run(_application_verification(_database_or_exit(database_url)))
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.echo(f"Verification queue failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    rows = [
+        {
+            "job_id": attempt.job.id,
+            "company": attempt.job.company.name,
+            "verification_type": str(
+                attempt.verification_type.value if attempt.verification_type else "unknown"
+            ),
+            "resume_instruction": attempt.resume_instruction,
+        }
+        for attempt in attempts
+    ]
+    if json_output:
+        typer.echo(json.dumps(rows, separators=(",", ":")))
+        return
+    typer.echo("Verification Required")
+    for row in rows:
+        typer.echo(
+            f"\n{row['job_id']}  {row['company']}\n"
+            f"     {row['verification_type']}\n"
+            f"     {row['resume_instruction'] or 'Complete verification in Chrome.'}"
+        )
+
+
+@applications_app.command("status")
+def applications_status(
+    job_id: int,
+    database_url: Annotated[str | None, typer.Option(envvar="DATABASE_URL")] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Inspect one application's current checkpoint."""
+    try:
+        checkpoint = _asyncio_run(_application_status(job_id, _database_or_exit(database_url)))
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.echo(f"Application status failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    if json_output:
+        typer.echo(checkpoint.model_dump_json())
+        return
+    typer.echo(f"Application {checkpoint.job_id}: {checkpoint.status.value}")
+    if checkpoint.current_url:
+        typer.echo(f"URL: {checkpoint.current_url}")
+    if checkpoint.verification_type:
+        typer.echo(f"Verification: {checkpoint.verification_type.value}")
+    if checkpoint.resume_instruction:
+        typer.echo(f"Instruction: {checkpoint.resume_instruction}")
+
+
+@applications_app.command("reset")
+def applications_reset(
+    job_id: int,
+    database_url: Annotated[str | None, typer.Option(envvar="DATABASE_URL")] = None,
+    confirm: Annotated[
+        bool, typer.Option("--confirm", help="Required because reset changes state.")
+    ] = False,
+) -> None:
+    """Explicitly reset an unsubmitted application to the queue."""
+    if not confirm:
+        typer.echo("Reset is state-changing; pass --confirm to proceed.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        attempt = _asyncio_run(_application_reset(job_id, _database_or_exit(database_url)))
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.echo(f"Application reset failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(f"Application {attempt.job_id} reset to {ApplicationStatus(attempt.status).value}.")
+
+
+@app.command("inspect-application")
+def inspect_application(
+    job_id: int,
+    database_url: Annotated[str | None, typer.Option(envvar="DATABASE_URL")] = None,
+    headless: Annotated[bool, typer.Option("--headless/--no-headless")] = False,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable JSON.")
+    ] = False,
+) -> None:
+    """Inspect a supported application form without changing or submitting it."""
+    url = database_url or os.environ.get("DATABASE_URL")
+    if not url:
+        typer.echo("DATABASE_URL is required.", err=True)
+        raise typer.Exit(code=2)
+    try:
+        form = _asyncio_run(_inspect_application(job_id, url, headless))
+    except Exception as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+    if json_output:
+        typer.echo(form.model_dump_json())
+        return
+    typer.echo("JobPing Application Inspector\n")
+    if form.company:
+        typer.echo(f"Company: {form.company}")
+    if form.role:
+        typer.echo(f"Role: {form.role}")
+    typer.echo(f"ATS: {form.ats}\nURL: {form.url}\n")
+    typer.echo("Fields:")
+    for index, field in enumerate(form.fields, 1):
+        required_text = "yes" if field.required else "no"
+        typer.echo(
+            f"\n{index}. {field.label}\n   ID: {field.id}\n   Type: {field.field_type.value}\n"
+            f"   Required: {required_text}"
+        )
+        if field.options:
+            typer.echo("   Options:")
+            for option in field.options:
+                typer.echo(f"     - {option.label}")
+    required = sum(field.required for field in form.fields)
+    typer.echo(
+        f"\nSummary:\n{len(form.fields)} fields discovered\n{required} required\n"
+        f"{len(form.fields) - required} optional"
+    )
 
 
 async def _audit_database(database_url: str, stale_hours: float) -> AuditReport:

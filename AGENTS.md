@@ -13,6 +13,9 @@ Current source families are Simplify GitHub README diffs/full sync, Greenhouse a
 Key directories:
 
 - `app/scrapers/`: source clients, parsers, Playwright/browser/proxy/network capture.
+- `app/applicants/`: read-only, ATS-specific application-form detection and inspection.
+- `app/applications/`: application inspection orchestration over repository and browser boundaries.
+- `app/candidate/`: private candidate profile schemas and local JSON loading.
 - `app/pipelines/`: orchestration from raw records through deduplication and persistence.
 - `app/services/`: hashing, Redis deduplication, and database audit logic.
 - `app/db/`: SQLAlchemy 2.0 models and async repository.
@@ -44,6 +47,20 @@ Never reproduce hash logic ad hoc; call `app.services.hasher`.
 - One Lua operation atomically compares, refreshes TTL, and updates content state: missing -> `NEW_ROLE`; equal -> `NO_OP`; changed and open -> `ROLE_UPDATED`; changed and closed -> `ROLE_CLOSED`.
 
 Redis classification and PostgreSQL writes are separate systems, not one distributed transaction. The ATS pipeline classifies before SQL persistence; a SQL failure can leave Redis ahead until reconciliation or TTL expiry. Do not publish externally visible events before the SQL transaction is safely persisted. Full Simplify sync may persist `NO_OP` rows to repair an empty database behind a warm cache.
+
+## Application inspection
+
+Phase 1 supports read-only Greenhouse application inspection through `python -m app.cli inspect-application <job_id>`. `ApplicationService` loads an open job through `DatabaseRepository`, detects its ATS, owns the injected `BrowserManager` lifecycle, navigates to the application URL, and delegates DOM normalization to `GreenhouseApplicant`. Lever and Workday are detected but intentionally rejected as unsupported for inspection.
+
+Normalized application forms use ATS-independent schemas in `app/schemas/application.py`. Inspection may read controls, labels, required markers, and options, but must never fill, select, check, upload, click submission controls, or submit a form. Candidate data belongs under the gitignored `private/` directory; loaders must validate it without logging its contents and must verify the configured resume path exists.
+
+The autonomous application backend uses `app/mcp/` for high-level business tools
+and `app/applications/` for deterministic queue, answer resolution, and state
+transitions. `ApplicationAttempt` and `ApplicationAnswer` are persisted by the
+`0002_application_agent` migration. Codex Chrome owns live browser perception and
+interaction; JobPing must not add application Playwright filling, submission, OTP
+retrieval, CAPTCHA bypass, or secret storage. Verification checkpoints store only
+type, URL, and a user instruction. `applications.auto_submit` defaults to false.
 
 ## Ingestion and scraper behavior
 

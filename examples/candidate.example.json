@@ -1,0 +1,7 @@
+{
+  "personal": {"first_name": "Jane", "last_name": "Doe", "email": "jane@example.com", "phone": "+1-555-555-5555", "location": "Tempe, AZ"},
+  "education": {"school": "Example University", "degree": "Bachelor of Science", "major": "Computer Science", "graduation_date": "2027-05", "gpa": "3.9"},
+  "links": {"linkedin": "https://linkedin.com/in/example", "github": "https://github.com/example", "portfolio": "https://example.com"},
+  "work_authorization": {"authorized_us": true, "requires_sponsorship": true},
+  "resume_path": "resume.pdf"
+}

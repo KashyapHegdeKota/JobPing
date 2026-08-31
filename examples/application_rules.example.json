@@ -1,0 +1,20 @@
+{
+  "never_invent": [
+    "citizenship",
+    "work_authorization",
+    "visa_sponsorship",
+    "security_clearance",
+    "criminal_history",
+    "gpa",
+    "graduation_date"
+  ],
+  "generation_allowed": [
+    "why_company",
+    "why_role",
+    "project_description",
+    "technical_challenge",
+    "leadership",
+    "failure"
+  ],
+  "always_review": ["salary_expectation", "unknown_legal_question"]
+}

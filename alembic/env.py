@@ -12,7 +12,7 @@ from sqlalchemy import engine_from_config, pool
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # A local SQLite database makes Alembic commands usable out of the box without
 # connecting to (or mutating) the development PostgreSQL service. Deployments

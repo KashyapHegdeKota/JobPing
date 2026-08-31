@@ -1,5 +1,7 @@
 """Tests for the local Simplify ingestion command."""
 
+# ruff: noqa: E501
+
 from __future__ import annotations
 
 from app import cli
@@ -9,6 +11,42 @@ from pytest import MonkeyPatch
 from typer.testing import CliRunner
 
 runner = CliRunner()
+
+
+def test_inspect_application_human_and_json(monkeypatch: MonkeyPatch) -> None:
+    from app.schemas.application import ApplicationField, ApplicationFieldType, ApplicationForm
+
+    form = ApplicationForm(
+        ats="greenhouse",
+        job_id=1,
+        url="https://boards.greenhouse.io/acme/1",
+        company="Acme",
+        role="Intern",
+        fields=[
+            ApplicationField(
+                id="email", label="Email", field_type=ApplicationFieldType.EMAIL, required=True
+            )
+        ],
+    )
+
+    async def fake(*args: object) -> ApplicationForm:
+        return form
+
+    monkeypatch.setattr(cli, "_inspect_application", fake)
+    human = runner.invoke(
+        cli.app, ["inspect-application", "1", "--database-url", "sqlite+aiosqlite://"]
+    )
+    assert human.exit_code == 0 and "Company: Acme" in human.stdout
+    machine = runner.invoke(
+        cli.app, ["inspect-application", "1", "--database-url", "sqlite+aiosqlite://", "--json"]
+    )
+    assert machine.exit_code == 0 and machine.stdout.strip().startswith("{")
+
+
+def test_inspect_application_requires_database_url(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+    result = runner.invoke(cli.app, ["inspect-application", "1"])
+    assert result.exit_code == 2 and "DATABASE_URL is required" in result.output
 
 
 def test_run_simplify_parser_passes_options_and_prints_summary(monkeypatch: MonkeyPatch) -> None:

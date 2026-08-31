@@ -2,7 +2,16 @@
 
 import unittest
 
-from app.db.models import Base, Company, JobPosting, JobType, StatusLog
+from app.db.models import (
+    ApplicationAnswer,
+    ApplicationAttempt,
+    ApplicationStatus,
+    Base,
+    Company,
+    JobPosting,
+    JobType,
+    StatusLog,
+)
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 
@@ -21,11 +30,22 @@ class DatabaseModelsTestCase(unittest.TestCase):
         inspector = inspect(self.engine)
 
         self.assertEqual(
-            set(inspector.get_table_names()), {"companies", "job_postings", "status_logs"}
+            set(inspector.get_table_names()),
+            {
+                "companies",
+                "job_postings",
+                "status_logs",
+                "application_attempts",
+                "application_answers",
+            },
         )
         index_names = {index["name"] for index in inspector.get_indexes("job_postings")}
         self.assertIn("ix_job_postings_discovery", index_names)
         self.assertIn("ix_job_postings_content_hash", index_names)
+        self.assertIn(
+            "ix_application_attempts_status",
+            {index["name"] for index in inspector.get_indexes("application_attempts")},
+        )
 
     def test_models_persist_with_relationships(self) -> None:
         company = Company(name="Example", domain="example.com")
@@ -50,6 +70,20 @@ class DatabaseModelsTestCase(unittest.TestCase):
             self.assertEqual(posting.company.name, "Example")
             self.assertEqual(posting.status_logs[0].new_state, "new_role")
             self.assertIsNotNone(posting.created_at)
+
+            attempt = ApplicationAttempt(job=posting, status=ApplicationStatus.QUEUED)
+            attempt.answers.append(
+                ApplicationAnswer(
+                    question="Why?",
+                    normalized_question="why",
+                    answer="A reviewed answer.",
+                    source="human",
+                )
+            )
+            session.add(attempt)
+            session.commit()
+            self.assertEqual(posting.application_attempt.status, ApplicationStatus.QUEUED)
+            self.assertEqual(posting.application_attempt.answers[0].source, "human")
 
 
 if __name__ == "__main__":

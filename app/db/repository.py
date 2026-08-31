@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
@@ -13,15 +14,45 @@ from sqlalchemy import case, event, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from app.db.models import Company, JobPosting, JobType, StatusLog
+from app.db.models import (
+    ApplicationAnswer,
+    ApplicationAttempt,
+    ApplicationFailure,
+    ApplicationStatus,
+    Company,
+    JobPosting,
+    JobType,
+    StatusLog,
+    VerificationType,
+)
 from app.events.publisher import EventPublisher, JobEventType
 from app.schemas.job import NormalizedJob
 
 logger = logging.getLogger(__name__)
 
 _PENDING_EVENTS_KEY = "jobping_pending_events"
+
+
+def _contains_verification_secret(value: str | None) -> bool:
+    """Detect likely codes without ever including the candidate value in errors/logs."""
+    if not value:
+        return False
+    normalized = value.casefold()
+    has_code_context = any(
+        term in normalized
+        for term in (
+            "otp",
+            "one time",
+            "verification",
+            "security code",
+            "authenticator",
+            "enter code",
+            "code is",
+        )
+    )
+    return has_code_context and re.search(r"(?<!\d)\d{4,10}(?!\d)", value) is not None
 
 
 class DatabaseRepository:
@@ -179,6 +210,246 @@ class DatabaseRepository:
         return await self._session.scalar(
             select(JobPosting).where(JobPosting.base_hash == normalized_hash)
         )
+
+    async def get_job_by_id(self, job_id: int) -> JobPosting | None:
+        """Return a posting and its company for application inspection."""
+        if job_id <= 0:
+            raise ValueError("job id must be positive")
+        return await self._session.scalar(
+            select(JobPosting)
+            .options(joinedload(JobPosting.company))
+            .where(JobPosting.id == job_id)
+        )
+
+    async def get_application_attempt(self, job_id: int) -> ApplicationAttempt | None:
+        """Return an application's durable checkpoint, including saved answers."""
+        if job_id <= 0:
+            raise ValueError("job id must be positive")
+        return await self._session.scalar(
+            select(ApplicationAttempt)
+            .options(joinedload(ApplicationAttempt.job).joinedload(JobPosting.company))
+            .where(ApplicationAttempt.job_id == job_id)
+        )
+
+    async def ensure_application_attempt(self, job_id: int) -> ApplicationAttempt:
+        """Create a queued attempt for an open posting, or return the existing one."""
+        job = await self.get_job_by_id(job_id)
+        if job is None:
+            raise ValueError(f"Job {job_id} not found")
+        if job.is_closed:
+            raise ValueError(f"Job {job_id} is closed")
+        existing = await self.get_application_attempt(job_id)
+        if existing is not None:
+            return existing
+        async with self._transaction():
+            attempt = ApplicationAttempt(job=job, status=ApplicationStatus.QUEUED)
+            self._session.add(attempt)
+            await self._session.flush()
+            return attempt
+
+    async def get_next_application(self) -> ApplicationAttempt | None:
+        """Return the newest open job not blocked by a terminal/checkpoint state."""
+        eligible = (ApplicationStatus.QUEUED,)
+        statement = (
+            select(JobPosting)
+            .outerjoin(ApplicationAttempt, ApplicationAttempt.job_id == JobPosting.id)
+            .options(joinedload(JobPosting.company), joinedload(JobPosting.application_attempt))
+            .where(
+                JobPosting.is_closed.is_(False),
+                or_(ApplicationAttempt.id.is_(None), ApplicationAttempt.status.in_(eligible)),
+            )
+            .order_by(JobPosting.created_at.desc(), JobPosting.id.desc())
+            .limit(1)
+        )
+        job = await self._session.scalar(statement)
+        if job is None:
+            return None
+        if job.application_attempt is None:
+            return await self.ensure_application_attempt(job.id)
+        return job.application_attempt
+
+    async def list_application_queue(self) -> list[ApplicationAttempt]:
+        """Return all eligible attempts in deterministic newest-first order."""
+        statement = (
+            select(JobPosting)
+            .outerjoin(ApplicationAttempt, ApplicationAttempt.job_id == JobPosting.id)
+            .options(joinedload(JobPosting.company), joinedload(JobPosting.application_attempt))
+            .where(
+                JobPosting.is_closed.is_(False),
+                or_(
+                    ApplicationAttempt.id.is_(None),
+                    ApplicationAttempt.status.in_((ApplicationStatus.QUEUED,)),
+                ),
+            )
+            .order_by(JobPosting.created_at.desc(), JobPosting.id.desc())
+        )
+        jobs = list((await self._session.scalars(statement)).unique().all())
+        attempts: list[ApplicationAttempt] = []
+        for job in jobs:
+            attempts.append(
+                job.application_attempt or await self.ensure_application_attempt(job.id)
+            )
+        return attempts
+
+    async def list_verification_required(self) -> list[ApplicationAttempt]:
+        """Return paused verifications in oldest-checkpoint-first order."""
+        statement = (
+            select(ApplicationAttempt)
+            .options(joinedload(ApplicationAttempt.job).joinedload(JobPosting.company))
+            .where(ApplicationAttempt.status == ApplicationStatus.NEEDS_VERIFICATION)
+            .order_by(ApplicationAttempt.updated_at.asc(), ApplicationAttempt.id.asc())
+        )
+        return list((await self._session.scalars(statement)).unique().all())
+
+    async def transition_application(
+        self,
+        job_id: int,
+        new_status: ApplicationStatus,
+        *,
+        current_url: str | None = None,
+        confirmation_url: str | None = None,
+        verification_type: VerificationType | None = None,
+        resume_instruction: str | None = None,
+        failure_code: ApplicationFailure | None = None,
+        failure_message: str | None = None,
+    ) -> ApplicationAttempt:
+        """Apply one validated application state transition atomically."""
+        attempt = await self.ensure_application_attempt(job_id)
+        allowed: dict[ApplicationStatus, frozenset[ApplicationStatus]] = {
+            ApplicationStatus.QUEUED: frozenset({ApplicationStatus.IN_PROGRESS}),
+            ApplicationStatus.IN_PROGRESS: frozenset(
+                {
+                    ApplicationStatus.NEEDS_VERIFICATION,
+                    ApplicationStatus.NEEDS_REVIEW,
+                    ApplicationStatus.READY_TO_SUBMIT,
+                    ApplicationStatus.FAILED,
+                }
+            ),
+            ApplicationStatus.NEEDS_VERIFICATION: frozenset({ApplicationStatus.IN_PROGRESS}),
+            ApplicationStatus.READY_TO_SUBMIT: frozenset({ApplicationStatus.SUBMITTED}),
+            ApplicationStatus.FAILED: frozenset({ApplicationStatus.IN_PROGRESS}),
+            ApplicationStatus.NEEDS_REVIEW: frozenset(),
+            ApplicationStatus.SUBMITTED: frozenset(),
+            ApplicationStatus.SKIPPED: frozenset(),
+        }
+        previous_status = ApplicationStatus(attempt.status)
+        if new_status not in allowed.get(previous_status, frozenset()):
+            raise ValueError(
+                "invalid application transition: " f"{previous_status.value} -> {new_status.value}"
+            )
+        instruction_has_code = bool(
+            resume_instruction and re.search(r"(?<!\d)\d{4,10}(?!\d)", resume_instruction)
+        )
+        if instruction_has_code or _contains_verification_secret(failure_message):
+            raise ValueError("verification secrets must not be stored")
+        async with self._transaction():
+            now = datetime.now(UTC)
+            attempt.status = new_status
+            attempt.updated_at = now
+            if current_url is not None:
+                attempt.current_url = current_url
+            if confirmation_url is not None:
+                attempt.confirmation_url = confirmation_url
+            if new_status is ApplicationStatus.IN_PROGRESS and previous_status in {
+                ApplicationStatus.QUEUED,
+                ApplicationStatus.FAILED,
+            }:
+                attempt.attempt_count += 1
+                attempt.started_at = attempt.started_at or now
+            if (
+                new_status is ApplicationStatus.IN_PROGRESS
+                and previous_status is ApplicationStatus.NEEDS_VERIFICATION
+            ):
+                attempt.verification_completed_at = now
+                attempt.resume_instruction = None
+            if new_status is ApplicationStatus.NEEDS_VERIFICATION:
+                attempt.verification_type = verification_type or VerificationType.UNKNOWN
+                attempt.verification_started_at = now
+                attempt.resume_instruction = resume_instruction
+            if new_status is ApplicationStatus.SUBMITTED:
+                attempt.submitted_at = now
+            if new_status is ApplicationStatus.FAILED:
+                attempt.failure_code = failure_code or ApplicationFailure.UNKNOWN
+                attempt.failure_message = failure_message
+            await self._session.flush()
+            return attempt
+
+    async def save_application_answer(
+        self,
+        job_id: int,
+        *,
+        question: str,
+        normalized_question: str,
+        answer: str,
+        source: str,
+        generated: bool = False,
+        confidence: float | None = None,
+    ) -> ApplicationAnswer:
+        """Record a non-secret answer; OTPs and authentication secrets are rejected."""
+        combined = f"{question} {answer}".casefold()
+        secret_terms = (
+            "otp",
+            "one time password",
+            "verification code",
+            "security code",
+            "authenticator seed",
+        )
+        likely_code = re.search(r"(?<!\d)\d{4,10}(?!\d)", answer) is not None
+        verification_context = any(
+            term in question.casefold()
+            for term in (
+                "otp",
+                "one time",
+                "verification",
+                "security code",
+                "authenticator",
+                "enter code",
+                "code",
+            )
+        )
+        if any(term in combined for term in secret_terms) or (likely_code and verification_context):
+            raise ValueError("verification secrets must not be stored")
+        if not question.strip() or not normalized_question.strip() or not answer.strip():
+            raise ValueError("question and answer must not be empty")
+        if not source.strip():
+            raise ValueError("answer source must not be empty")
+        if not 0 <= (confidence if confidence is not None else 0.0) <= 1:
+            raise ValueError("confidence must be between 0 and 1")
+        attempt = await self.ensure_application_attempt(job_id)
+        async with self._transaction():
+            record = ApplicationAnswer(
+                application_id=attempt.id,
+                question=question.strip(),
+                normalized_question=normalized_question.strip(),
+                answer=answer.strip(),
+                source=source.strip(),
+                generated=generated,
+                confidence=confidence,
+            )
+            self._session.add(record)
+            await self._session.flush()
+            return record
+
+    async def reset_application(self, job_id: int) -> ApplicationAttempt:
+        """Explicitly reset a checkpoint to queued without deleting its audit answers."""
+        attempt = await self.get_application_attempt(job_id)
+        if attempt is None:
+            return await self.ensure_application_attempt(job_id)
+        if attempt.status is ApplicationStatus.SUBMITTED:
+            raise ValueError("submitted applications cannot be reset")
+        async with self._transaction():
+            attempt.status = ApplicationStatus.QUEUED
+            attempt.current_url = None
+            attempt.confirmation_url = None
+            attempt.verification_type = None
+            attempt.verification_started_at = None
+            attempt.verification_completed_at = None
+            attempt.resume_instruction = None
+            attempt.failure_code = None
+            attempt.failure_message = None
+            attempt.updated_at = datetime.now(UTC)
+            await self._session.flush()
+            return attempt
 
     async def bulk_upsert_job_postings(
         self, normalized_jobs: Sequence[NormalizedJob]

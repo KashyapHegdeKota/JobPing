@@ -1,0 +1,3 @@
+applications:
+  # Safe default: stop at READY_TO_SUBMIT and let the user submit in Chrome.
+  auto_submit: false

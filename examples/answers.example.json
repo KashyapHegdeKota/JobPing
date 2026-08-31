@@ -1,0 +1,19 @@
+{
+  "work_authorization": {
+    "authorized_us": "Yes",
+    "requires_sponsorship": "No"
+  },
+  "availability": {
+    "relocate": "Yes"
+  },
+  "application_answers": [
+    {
+      "id": "why_software_engineering",
+      "patterns": [
+        "why software engineering",
+        "why are you interested in software engineering"
+      ],
+      "answer": "Replace this sanitized example with your own reviewed answer."
+    }
+  ]
+}

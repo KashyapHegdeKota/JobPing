@@ -97,6 +97,14 @@ async def test_job_lookup_by_base_hash_is_owned_by_repository(session: AsyncSess
         await repository.get_job_posting_by_base_hash("  ")
 
 
+async def test_get_job_by_id_eager_loads_company(session: AsyncSession) -> None:
+    repository = DatabaseRepository(session)
+    saved = await repository.save_job_posting(make_job())
+    found = await repository.get_job_by_id(saved.id)
+    assert found is saved
+    assert found.company.name == "Acme"
+
+
 async def test_bulk_upsert_persists_multiple_jobs_and_state_transitions(
     session: AsyncSession,
 ) -> None:

@@ -30,6 +30,45 @@ class JobType(StrEnum):
     NEW_GRAD = "new_grad"
 
 
+class ApplicationStatus(StrEnum):
+    """Persisted lifecycle states for an application attempt."""
+
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    NEEDS_VERIFICATION = "needs_verification"
+    NEEDS_REVIEW = "needs_review"
+    READY_TO_SUBMIT = "ready_to_submit"
+    SUBMITTED = "submitted"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+class VerificationType(StrEnum):
+    """Human-completed verification mechanisms; no values are stored here."""
+
+    EMAIL_OTP = "email_otp"
+    EMAIL_MAGIC_LINK = "email_magic_link"
+    SMS_OTP = "sms_otp"
+    AUTHENTICATOR = "authenticator"
+    CAPTCHA = "captcha"
+    LOGIN = "login"
+    UNKNOWN = "unknown"
+
+
+class ApplicationFailure(StrEnum):
+    """Small stable set of failure reasons exposed to the application agent."""
+
+    UNKNOWN = "unknown"
+    APPLICATION_CLOSED = "application_closed"
+    ALREADY_APPLIED = "already_applied"
+    UNSUPPORTED_FLOW = "unsupported_flow"
+    MISSING_CANDIDATE_DATA = "missing_candidate_data"
+    LOGIN_REQUIRED = "login_required"
+    VERIFICATION_REQUIRED = "verification_required"
+    BROWSER_ERROR = "browser_error"
+    SUBMISSION_FAILED = "submission_failed"
+
+
 class Company(Base):
     """An employer that owns one or more job postings."""
 
@@ -88,6 +127,9 @@ class JobPosting(Base):
     status_logs: Mapped[list[StatusLog]] = relationship(
         back_populates="job", cascade="all, delete-orphan", passive_deletes=True
     )
+    application_attempt: Mapped[ApplicationAttempt | None] = relationship(
+        back_populates="job", cascade="all, delete-orphan", passive_deletes=True, uselist=False
+    )
 
 
 class StatusLog(Base):
@@ -107,3 +149,87 @@ class StatusLog(Base):
     )
 
     job: Mapped[JobPosting] = relationship(back_populates="status_logs")
+
+
+class ApplicationAttempt(Base):
+    """Durable application checkpoint for one job.
+
+    There is one attempt row per job.  This gives reset and resume operations a
+    stable identity while preventing duplicate concurrent attempts.
+    """
+
+    __tablename__ = "application_attempts"
+    __table_args__ = (
+        UniqueConstraint("job_id", name="uq_application_attempts_job_id"),
+        Index("ix_application_attempts_status", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("job_postings.id", ondelete="CASCADE"), nullable=False
+    )
+    status: Mapped[ApplicationStatus] = mapped_column(
+        Enum(
+            ApplicationStatus,
+            name="application_status",
+            values_callable=lambda enum: [item.value for item in enum],
+        ),
+        nullable=False,
+        default=ApplicationStatus.QUEUED,
+        server_default=ApplicationStatus.QUEUED.value,
+    )
+    attempt_count: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    current_url: Mapped[str | None] = mapped_column(String(2048))
+    confirmation_url: Mapped[str | None] = mapped_column(String(2048))
+    verification_type: Mapped[VerificationType | None] = mapped_column(
+        Enum(
+            VerificationType,
+            name="verification_type",
+            values_callable=lambda enum: [item.value for item in enum],
+        )
+    )
+    verification_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verification_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    resume_instruction: Mapped[str | None] = mapped_column(String(2000))
+    failure_code: Mapped[ApplicationFailure | None] = mapped_column(
+        Enum(
+            ApplicationFailure,
+            name="application_failure",
+            values_callable=lambda enum: [item.value for item in enum],
+        )
+    )
+    failure_message: Mapped[str | None] = mapped_column(String(2000))
+
+    job: Mapped[JobPosting] = relationship(back_populates="application_attempt")
+    answers: Mapped[list[ApplicationAnswer]] = relationship(
+        back_populates="application", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class ApplicationAnswer(Base):
+    """A non-secret answer recorded for auditability and resume support."""
+
+    __tablename__ = "application_answers"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    application_id: Mapped[int] = mapped_column(
+        ForeignKey("application_attempts.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    question: Mapped[str] = mapped_column(String(2000), nullable=False)
+    normalized_question: Mapped[str] = mapped_column(String(2000), nullable=False)
+    answer: Mapped[str] = mapped_column(String(10000), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    generated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    confidence: Mapped[float | None] = mapped_column()
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    application: Mapped[ApplicationAttempt] = relationship(back_populates="answers")
