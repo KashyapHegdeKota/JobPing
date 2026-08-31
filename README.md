@@ -1,5 +1,53 @@
 # JobPing
 
+## Application Inspection
+
+JobPing can inspect supported ATS application forms without modifying or submitting them:
+
+```text
+poetry run python -m app.cli inspect-application <job-id>
+```
+
+Currently supported: Greenhouse inspection. Lever and Workday inspection are planned.
+The `private/` directory is intentionally gitignored; use the sanitized files in
+`examples/` as a starting point for local candidate configuration.
+
+## Autonomous application backend (Phase 1)
+
+The application backend stores one durable checkpoint per job in
+`application_attempts` and non-secret answer audit records in `application_answers`.
+Apply the `0002_application_agent` Alembic migration after the initial schema. The
+candidate profile loader validates `private/candidate.json` and its resume path; use
+the sanitized candidate, answer, story, and rule files in `examples/` as templates.
+
+The Codex application agent uses the high-level JobPing MCP facade for job facts,
+candidate facts, deterministic answer lookup, and application state. Browser
+perception and interaction remain in the Codex Chrome extension. JobPing does not
+fill forms, retrieve OTPs, bypass CAPTCHA, or store authentication secrets.
+
+Useful operational commands:
+
+```text
+poetry run python -m app.cli applications queue
+poetry run python -m app.cli applications verification
+poetry run python -m app.cli applications status <job-id>
+poetry run python -m app.cli applications reset <job-id> --confirm
+```
+
+`config.example.yaml` sets `applications.auto_submit: false`; the safe initial
+workflow stops at `READY_TO_SUBMIT` for a human review and submission.
+
+Run the official MCP v2 stdio server for Codex:
+
+```text
+DATABASE_URL=sqlite+aiosqlite:///jobping.db poetry run python -m app.mcp.server
+```
+
+The server registers the fourteen `jobs_*`, `candidate_*`, and `application_*`
+business tools and owns one SQLAlchemy engine lifecycle. Set
+`JOBPING_CANDIDATE_PATH`, `JOBPING_ANSWERS_PATH`, `JOBPING_STORIES_PATH`, and
+`JOBPING_RULES_PATH` to override the default files under `private/`.
+
 JobPing is a low-latency job discovery engine for 2026/2027 technology internships and
 new-grad roles. The ingestion foundation includes GitHub commit retrieval, unified-diff and
 Markdown parsing, direct ATS scrapers (Greenhouse, Lever, Workday, Custom Tech), network interception, browser automation, normalization, dual SHA-256 hashing, Redis-backed state classification, and SQLAlchemy persistence with Alembic migrations.

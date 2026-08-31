@@ -1,0 +1,11 @@
+{
+  "stories": {
+    "example_project": {
+      "summary": "Replace with a reviewed project summary.",
+      "technical_challenge": "Replace with a concrete technical challenge.",
+      "failure": "Replace with a lesson from a real failure.",
+      "impact": "Replace with measurable impact when available.",
+      "leadership": "Replace with a specific leadership example."
+    }
+  }
+}
