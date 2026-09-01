@@ -21,6 +21,7 @@ from app.db.models import (
     ApplicationAttempt,
     ApplicationFailure,
     ApplicationStatus,
+    CheckpointStage,
     Company,
     JobPosting,
     JobType,
@@ -301,6 +302,75 @@ class DatabaseRepository:
         )
         return list((await self._session.scalars(statement)).unique().all())
 
+    async def list_applications_by_status(
+        self, status: ApplicationStatus
+    ) -> list[ApplicationAttempt]:
+        """Return attempts in a stable oldest-checkpoint-first order."""
+        statement = (
+            select(ApplicationAttempt)
+            .options(joinedload(ApplicationAttempt.job).joinedload(JobPosting.company))
+            .where(ApplicationAttempt.status == status)
+            .order_by(ApplicationAttempt.updated_at.asc(), ApplicationAttempt.id.asc())
+        )
+        return list((await self._session.scalars(statement)).unique().all())
+
+    async def update_application_checkpoint(
+        self,
+        job_id: int,
+        *,
+        current_url: str | None = None,
+        stage: CheckpointStage | str | None = None,
+    ) -> ApplicationAttempt:
+        """Update resumable browser metadata without changing lifecycle state."""
+        attempt = await self.get_application_attempt(job_id)
+        if attempt is None:
+            raise ValueError("application must be started before updating its checkpoint")
+        active_statuses = frozenset(
+            {
+                ApplicationStatus.IN_PROGRESS,
+                ApplicationStatus.NEEDS_VERIFICATION,
+                ApplicationStatus.NEEDS_REVIEW,
+                ApplicationStatus.READY_TO_SUBMIT,
+            }
+        )
+        if attempt.status not in active_statuses:
+            raise ValueError("checkpoint updates are only allowed for an active application")
+        normalized_stage = CheckpointStage(stage) if stage is not None else None
+        if current_url is not None and not current_url.strip():
+            raise ValueError("current URL must not be empty")
+        if normalized_stage is not None:
+            stage_statuses: dict[CheckpointStage, frozenset[ApplicationStatus]] = {
+                CheckpointStage.OPENED: frozenset({ApplicationStatus.IN_PROGRESS}),
+                CheckpointStage.APPLICATION_FORM: frozenset({ApplicationStatus.IN_PROGRESS}),
+                CheckpointStage.CANDIDATE_INFO: frozenset({ApplicationStatus.IN_PROGRESS}),
+                CheckpointStage.RESUME_UPLOADED: frozenset({ApplicationStatus.IN_PROGRESS}),
+                CheckpointStage.CUSTOM_QUESTIONS: frozenset({ApplicationStatus.IN_PROGRESS}),
+                CheckpointStage.VERIFICATION: frozenset(
+                    {ApplicationStatus.IN_PROGRESS, ApplicationStatus.NEEDS_VERIFICATION}
+                ),
+                CheckpointStage.REVIEW: frozenset(
+                    {ApplicationStatus.IN_PROGRESS, ApplicationStatus.NEEDS_REVIEW}
+                ),
+                CheckpointStage.READY_TO_SUBMIT: frozenset(
+                    {ApplicationStatus.IN_PROGRESS, ApplicationStatus.READY_TO_SUBMIT}
+                ),
+                CheckpointStage.SUBMITTED: frozenset({ApplicationStatus.SUBMITTED}),
+                CheckpointStage.FAILED: frozenset({ApplicationStatus.FAILED}),
+            }
+            if attempt.status not in stage_statuses[normalized_stage]:
+                raise ValueError(
+                    f"checkpoint stage {normalized_stage.value} is inconsistent with "
+                    f"application status {ApplicationStatus(attempt.status).value}"
+                )
+        async with self._transaction():
+            if current_url is not None:
+                attempt.current_url = current_url.strip()
+            if normalized_stage is not None:
+                attempt.checkpoint_stage = normalized_stage.value
+            attempt.updated_at = datetime.now(UTC)
+            await self._session.flush()
+            return attempt
+
     async def transition_application(
         self,
         job_id: int,
@@ -312,11 +382,30 @@ class DatabaseRepository:
         resume_instruction: str | None = None,
         failure_code: ApplicationFailure | None = None,
         failure_message: str | None = None,
+        review_question: str | None = None,
+        review_reason: str | None = None,
     ) -> ApplicationAttempt:
         """Apply one validated application state transition atomically."""
-        attempt = await self.ensure_application_attempt(job_id)
+        # Existing attempts remain addressable even when a posting later closes;
+        # this allows the agent to record an explicit ``application_closed``
+        # failure without creating a new attempt for a closed posting.
+        attempt = await self.get_application_attempt(job_id)
+        if attempt is None:
+            job = await self.get_job_by_id(job_id)
+            if job is None:
+                raise ValueError(f"Job {job_id} not found")
+            if job.is_closed and new_status is not ApplicationStatus.FAILED:
+                raise ValueError(f"Job {job_id} is closed")
+            async with self._transaction():
+                attempt = ApplicationAttempt(job=job, status=ApplicationStatus.QUEUED)
+                self._session.add(attempt)
+                await self._session.flush()
+        elif attempt.job.is_closed and new_status is not ApplicationStatus.FAILED:
+            raise ValueError(f"Job {job_id} is closed")
         allowed: dict[ApplicationStatus, frozenset[ApplicationStatus]] = {
-            ApplicationStatus.QUEUED: frozenset({ApplicationStatus.IN_PROGRESS}),
+            ApplicationStatus.QUEUED: frozenset(
+                {ApplicationStatus.IN_PROGRESS, ApplicationStatus.FAILED}
+            ),
             ApplicationStatus.IN_PROGRESS: frozenset(
                 {
                     ApplicationStatus.NEEDS_VERIFICATION,
@@ -325,10 +414,14 @@ class DatabaseRepository:
                     ApplicationStatus.FAILED,
                 }
             ),
-            ApplicationStatus.NEEDS_VERIFICATION: frozenset({ApplicationStatus.IN_PROGRESS}),
-            ApplicationStatus.READY_TO_SUBMIT: frozenset({ApplicationStatus.SUBMITTED}),
+            ApplicationStatus.NEEDS_VERIFICATION: frozenset(
+                {ApplicationStatus.IN_PROGRESS, ApplicationStatus.FAILED}
+            ),
+            ApplicationStatus.READY_TO_SUBMIT: frozenset(
+                {ApplicationStatus.SUBMITTED, ApplicationStatus.FAILED}
+            ),
             ApplicationStatus.FAILED: frozenset({ApplicationStatus.IN_PROGRESS}),
-            ApplicationStatus.NEEDS_REVIEW: frozenset(),
+            ApplicationStatus.NEEDS_REVIEW: frozenset({ApplicationStatus.FAILED}),
             ApplicationStatus.SUBMITTED: frozenset(),
             ApplicationStatus.SKIPPED: frozenset(),
         }
@@ -340,8 +433,17 @@ class DatabaseRepository:
         instruction_has_code = bool(
             resume_instruction and re.search(r"(?<!\d)\d{4,10}(?!\d)", resume_instruction)
         )
-        if instruction_has_code or _contains_verification_secret(failure_message):
+        if (
+            instruction_has_code
+            or _contains_verification_secret(failure_message)
+            or _contains_verification_secret(review_question)
+            or _contains_verification_secret(review_reason)
+        ):
             raise ValueError("verification secrets must not be stored")
+        if review_question is not None and not review_question.strip():
+            raise ValueError("review question must not be empty")
+        if review_reason is not None and not review_reason.strip():
+            raise ValueError("review reason must not be empty")
         async with self._transaction():
             now = datetime.now(UTC)
             attempt.status = new_status
@@ -356,21 +458,38 @@ class DatabaseRepository:
             }:
                 attempt.attempt_count += 1
                 attempt.started_at = attempt.started_at or now
+                attempt.failure_code = None
+                attempt.failure_message = None
+                attempt.review_question = None
+                attempt.review_reason = None
             if (
                 new_status is ApplicationStatus.IN_PROGRESS
                 and previous_status is ApplicationStatus.NEEDS_VERIFICATION
             ):
                 attempt.verification_completed_at = now
                 attempt.resume_instruction = None
+                attempt.review_question = None
+                attempt.review_reason = None
             if new_status is ApplicationStatus.NEEDS_VERIFICATION:
                 attempt.verification_type = verification_type or VerificationType.UNKNOWN
                 attempt.verification_started_at = now
                 attempt.resume_instruction = resume_instruction
+                attempt.checkpoint_stage = CheckpointStage.VERIFICATION.value
+            elif new_status is ApplicationStatus.NEEDS_REVIEW:
+                attempt.checkpoint_stage = CheckpointStage.REVIEW.value
+                attempt.review_question = review_question.strip() if review_question else None
+                attempt.review_reason = review_reason.strip() if review_reason else None
+            elif new_status is ApplicationStatus.READY_TO_SUBMIT:
+                attempt.checkpoint_stage = CheckpointStage.READY_TO_SUBMIT.value
             if new_status is ApplicationStatus.SUBMITTED:
                 attempt.submitted_at = now
+                attempt.checkpoint_stage = CheckpointStage.SUBMITTED.value
             if new_status is ApplicationStatus.FAILED:
                 attempt.failure_code = failure_code or ApplicationFailure.UNKNOWN
                 attempt.failure_message = failure_message
+                attempt.review_question = None
+                attempt.review_reason = None
+                attempt.checkpoint_stage = CheckpointStage.FAILED.value
             await self._session.flush()
             return attempt
 
@@ -439,6 +558,7 @@ class DatabaseRepository:
             raise ValueError("submitted applications cannot be reset")
         async with self._transaction():
             attempt.status = ApplicationStatus.QUEUED
+            attempt.checkpoint_stage = None
             attempt.current_url = None
             attempt.confirmation_url = None
             attempt.verification_type = None
@@ -447,6 +567,8 @@ class DatabaseRepository:
             attempt.resume_instruction = None
             attempt.failure_code = None
             attempt.failure_message = None
+            attempt.review_question = None
+            attempt.review_reason = None
             attempt.updated_at = datetime.now(UTC)
             await self._session.flush()
             return attempt
