@@ -12,11 +12,13 @@ Currently supported: Greenhouse inspection. Lever and Workday inspection are pla
 The `private/` directory is intentionally gitignored; use the sanitized files in
 `examples/` as a starting point for local candidate configuration.
 
-## Autonomous application backend (Phase 1)
+## Autonomous application backend (Phase 2)
 
 The application backend stores one durable checkpoint per job in
-`application_attempts` and non-secret answer audit records in `application_answers`.
-Apply the `0002_application_agent` Alembic migration after the initial schema. The
+`application_attempts` (including its current browser URL and coarse checkpoint stage)
+and non-secret answer audit records in `application_answers`. Apply the
+`0002_application_agent` and `0003_application_checkpoint_stage` Alembic migrations
+after the initial schema. The
 candidate profile loader validates `private/candidate.json` and its resume path; use
 the sanitized candidate, answer, story, and rule files in `examples/` as templates.
 
@@ -29,6 +31,8 @@ Useful operational commands:
 
 ```text
 poetry run python -m app.cli applications queue
+poetry run python -m app.cli applications ready
+poetry run python -m app.cli applications review
 poetry run python -m app.cli applications verification
 poetry run python -m app.cli applications status <job-id>
 poetry run python -m app.cli applications reset <job-id> --confirm
@@ -37,16 +41,57 @@ poetry run python -m app.cli applications reset <job-id> --confirm
 `config.example.yaml` sets `applications.auto_submit: false`; the safe initial
 workflow stops at `READY_TO_SUBMIT` for a human review and submission.
 
-Run the official MCP v2 stdio server for Codex:
-
-```text
-DATABASE_URL=sqlite+aiosqlite:///jobping.db poetry run python -m app.mcp.server
-```
-
-The server registers the fourteen `jobs_*`, `candidate_*`, and `application_*`
-business tools and owns one SQLAlchemy engine lifecycle. Set
+The server registers high-level `jobs_*`, narrow `candidate_*`, `stories_get`, and
+`application_*` business tools and owns one SQLAlchemy engine lifecycle. Set
 `JOBPING_CANDIDATE_PATH`, `JOBPING_ANSWERS_PATH`, `JOBPING_STORIES_PATH`, and
 `JOBPING_RULES_PATH` to override the default files under `private/`.
+
+In PowerShell, first point `DATABASE_URL` at the same already-migrated PostgreSQL
+database used by JobPing. Do not use a fresh SQLite database here: it will not contain
+your real queued jobs. Run the migration before registering the server. Keep database
+credentials in your environment or local secret manager, never in Git:
+
+```powershell
+$repo = (Resolve-Path .).Path
+if (-not $env:DATABASE_URL) { throw "Set DATABASE_URL to the migrated JobPing PostgreSQL database first" }
+$env:JOBPING_CANDIDATE_PATH = (Join-Path $repo "private\candidate.json")
+$env:JOBPING_ANSWERS_PATH = (Join-Path $repo "private\answers.json")
+$env:JOBPING_STORIES_PATH = (Join-Path $repo "private\stories.json")
+$env:JOBPING_RULES_PATH = (Join-Path $repo "private\application_rules.json")
+
+poetry -C $repo run alembic upgrade head
+
+codex mcp add jobping `
+  --env "DATABASE_URL=$env:DATABASE_URL" `
+  --env "JOBPING_CANDIDATE_PATH=$env:JOBPING_CANDIDATE_PATH" `
+  --env "JOBPING_ANSWERS_PATH=$env:JOBPING_ANSWERS_PATH" `
+  --env "JOBPING_STORIES_PATH=$env:JOBPING_STORIES_PATH" `
+  --env "JOBPING_RULES_PATH=$env:JOBPING_RULES_PATH" `
+  -- poetry -C $repo run python -m app.mcp.server
+
+codex mcp list
+```
+
+To prepare one real application, ask Codex:
+
+```text
+Prepare application <JOB_ID> using JobPing. Use the Chrome browser. Stop at READY_TO_SUBMIT.
+```
+
+After a user completes a verification checkpoint, ask:
+
+```text
+resume application <JOB_ID>
+```
+
+Submit only with this explicit instruction after reviewing the ready application:
+
+```text
+submit application <JOB_ID>
+```
+
+JobPing never fills forms, reads OTPs, bypasses CAPTCHA, stores credentials, or submits
+unattended.
 
 JobPing is a low-latency job discovery engine for 2026/2027 technology internships and
 new-grad roles. The ingestion foundation includes GitHub commit retrieval, unified-diff and

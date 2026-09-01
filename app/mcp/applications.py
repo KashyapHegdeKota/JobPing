@@ -12,10 +12,32 @@ async def application_lookup_answer(resolver: AnswerResolver, question: str) -> 
     return resolver.resolve(question).model_dump(mode="json")
 
 
+def stories_get(
+    resolver: AnswerResolver,
+    *,
+    story_ids: list[str] | None = None,
+    question: str | None = None,
+) -> dict[str, object]:
+    """Retrieve only story material relevant to one generated response."""
+    return resolver.get_stories(story_ids=story_ids, question=question)
+
+
 async def application_start(
     service: ApplicationService, job_id: int, current_url: str
 ) -> ApplicationCheckpoint:
     return checkpoint_from_attempt(await service.start_application(job_id, current_url))
+
+
+async def application_update_checkpoint(
+    service: ApplicationService,
+    job_id: int,
+    current_url: str | None = None,
+    stage: str | None = None,
+) -> ApplicationCheckpoint:
+    """Save a meaningful browser URL/stage without changing application status."""
+    return checkpoint_from_attempt(
+        await service.update_checkpoint(job_id, current_url=current_url, stage=stage)
+    )
 
 
 async def application_save_answer(
@@ -65,9 +87,15 @@ async def application_mark_verification_complete(
 
 
 async def application_mark_review_required(
-    service: ApplicationService, job_id: int, current_url: str | None = None
+    service: ApplicationService,
+    job_id: int,
+    current_url: str | None = None,
+    review_question: str | None = None,
+    review_reason: str | None = None,
 ) -> ApplicationCheckpoint:
-    return checkpoint_from_attempt(await service.mark_needs_review(job_id, current_url))
+    return checkpoint_from_attempt(
+        await service.mark_needs_review(job_id, current_url, review_question, review_reason)
+    )
 
 
 async def application_mark_ready(
@@ -105,4 +133,6 @@ __all__ = [
     "application_mark_verification_required",
     "application_save_answer",
     "application_start",
+    "application_update_checkpoint",
+    "stories_get",
 ]

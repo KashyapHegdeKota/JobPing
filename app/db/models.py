@@ -43,6 +43,21 @@ class ApplicationStatus(StrEnum):
     SKIPPED = "skipped"
 
 
+class CheckpointStage(StrEnum):
+    """Coarse browser workflow stages persisted for safe resume."""
+
+    OPENED = "opened"
+    APPLICATION_FORM = "application_form"
+    CANDIDATE_INFO = "candidate_info"
+    RESUME_UPLOADED = "resume_uploaded"
+    CUSTOM_QUESTIONS = "custom_questions"
+    VERIFICATION = "verification"
+    REVIEW = "review"
+    READY_TO_SUBMIT = "ready_to_submit"
+    SUBMITTED = "submitted"
+    FAILED = "failed"
+
+
 class VerificationType(StrEnum):
     """Human-completed verification mechanisms; no values are stored here."""
 
@@ -178,6 +193,7 @@ class ApplicationAttempt(Base):
         default=ApplicationStatus.QUEUED,
         server_default=ApplicationStatus.QUEUED.value,
     )
+    checkpoint_stage: Mapped[CheckpointStage | None] = mapped_column(String(64))
     attempt_count: Mapped[int] = mapped_column(nullable=False, default=0, server_default="0")
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(
@@ -204,6 +220,8 @@ class ApplicationAttempt(Base):
         )
     )
     failure_message: Mapped[str | None] = mapped_column(String(2000))
+    review_question: Mapped[str | None] = mapped_column(String(2000))
+    review_reason: Mapped[str | None] = mapped_column(String(2000))
 
     job: Mapped[JobPosting] = relationship(back_populates="application_attempt")
     answers: Mapped[list[ApplicationAnswer]] = relationship(

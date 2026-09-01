@@ -6,6 +6,7 @@ import json
 import os
 import sys
 from collections.abc import AsyncIterator
+from html.parser import HTMLParser
 from pathlib import Path
 
 import pytest
@@ -22,6 +23,20 @@ from app.mcp.server import JobPingMCPServer
 from app.schemas.job import NormalizedJob
 from sqlalchemy import create_engine, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+
+class _ApplicationFixtureParser(HTMLParser):
+    """Extract the browser-visible controls from the local workflow fixture."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.controls: dict[str, str] = {}
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        name = attributes.get("name")
+        if name and tag in {"input", "select", "textarea"}:
+            self.controls[name] = "select" if tag == "select" else attributes.get("type", "text")
 
 
 @pytest_asyncio.fixture
@@ -167,6 +182,15 @@ async def test_answer_storage_rejects_secrets_and_empty_sources(session: AsyncSe
             resume_instruction="123456",
         )
 
+    with pytest.raises(ValueError, match="must not be stored") as review_error:
+        await ApplicationService(repository).mark_review_required(
+            posting.id,
+            current_url="https://example.com/a",
+            review_question="Enter the verification code",
+            review_reason="The code is 123456.",
+        )
+    assert "123456" not in str(review_error.value)
+
 
 async def test_mcp_server_handlers_return_safe_business_data(
     session: AsyncSession, tmp_path: Path
@@ -226,6 +250,111 @@ async def test_mcp_server_handlers_return_safe_business_data(
         failed_posting.id, failure_code="browser_error", failure_message="Browser unavailable."
     )
     assert failed["status"] == "failed"
+
+
+async def test_phase2_checkpoint_subsets_stories_and_closed_failure(
+    session: AsyncSession, tmp_path: Path
+) -> None:
+    fixture = Path(__file__).parents[1] / "fixtures" / "application_agent" / "application_flow.html"
+    fixture_parser = _ApplicationFixtureParser()
+    fixture_parser.feed(fixture.read_text(encoding="utf-8"))
+    assert {
+        "first_name",
+        "last_name",
+        "email",
+        "phone",
+        "resume",
+        "work_authorization",
+        "sponsorship",
+        "why_role",
+        "degree",
+        "acknowledge",
+    }.issubset(fixture_parser.controls)
+    assert fixture_parser.controls["resume"] == "file"
+    assert "Verify your email" in fixture.read_text(encoding="utf-8")
+    assert "Thank you for applying" in fixture.read_text(encoding="utf-8")
+
+    resume = tmp_path / "resume.pdf"
+    resume.write_bytes(b"sanitized")
+    profile = CandidateProfile.model_validate(
+        {
+            "personal": {"first_name": "Jane", "last_name": "Doe", "email": "jane@example.com"},
+            "education": {"school": "Example U", "degree": "BS", "major": "CS"},
+            "links": {},
+            "work_authorization": {"authorized_us": True, "requires_sponsorship": False},
+            "resume_path": str(resume),
+        }
+    )
+    resolver = AnswerResolver(
+        profile, stories={"stories": {"project": {"summary": "Reviewed project."}}}
+    )
+    repository = DatabaseRepository(session)
+    posting = await repository.save_job_posting(job("a"))
+    server = JobPingMCPServer(repository, profile, resolver=resolver)
+
+    started = await server.application_start(posting.id, posting.apply_url)
+    checkpoint = await server.application_update_checkpoint(
+        posting.id, "https://example.com/form", "application_form"
+    )
+    assert started["status"] == "in_progress"
+    assert checkpoint["stage"] == "application_form"
+    assert checkpoint["current_url"] == "https://example.com/form"
+    assert server.candidate_get_contact()["email"] == "jane@example.com"
+    assert server.candidate_get_education()["school"] == "Example U"
+    assert server.candidate_get_work_authorization()["authorized_us"] is True
+    assert server.stories_get(story_ids=["project"])["story_ids"] == ["project"]
+
+    closed = await repository.save_job_posting(job("c", closed=True))
+    failed = await server.application_mark_failed(
+        closed.id, failure_code="application_closed", failure_message="Position removed."
+    )
+    assert failed["status"] == "failed"
+    assert failed["failure_code"] == "application_closed"
+
+
+async def test_review_metadata_checkpoint_safety_and_already_applied(
+    session: AsyncSession,
+) -> None:
+    repository = DatabaseRepository(session)
+    posting = await repository.save_job_posting(job("a"))
+    server = JobPingMCPServer(repository)
+
+    with pytest.raises(ValueError, match="must be started"):
+        await server.application_update_checkpoint(
+            posting.id, "https://example.com/form", "application_form"
+        )
+    assert await repository.get_application_attempt(posting.id) is None
+
+    await server.application_start(posting.id, posting.apply_url)
+    with pytest.raises(ValueError, match="inconsistent"):
+        await server.application_update_checkpoint(
+            posting.id, "https://example.com/form", "submitted"
+        )
+    updated = await server.application_update_checkpoint(
+        posting.id, "https://example.com/form", "application_form"
+    )
+    assert updated["status"] == "in_progress"
+
+    reviewed = await server.application_mark_review_required(
+        posting.id,
+        current_url="https://example.com/form",
+        review_question="What is your SAT score?",
+        review_reason="Candidate profile does not contain this factual value.",
+    )
+    assert reviewed["status"] == "needs_review"
+    assert reviewed["review_question"] == "What is your SAT score?"
+    assert reviewed["review_reason"].startswith("Candidate profile")
+    await server.service.reset_application(posting.id)
+    reset = await server.application_get_checkpoint(posting.id)
+    assert reset["review_question"] is None and reset["review_reason"] is None
+
+    await server.application_start(posting.id, posting.apply_url)
+    failed = await server.application_mark_failed(
+        posting.id,
+        failure_code="already_applied",
+        failure_message="Employer reports an existing application.",
+    )
+    assert failed["failure_code"] == "already_applied"
 
 
 def test_question_normalization_and_protected_resolution() -> None:
@@ -293,6 +422,7 @@ def test_application_migration_upgrade_and_downgrade_on_temporary_sqlite(
             item["name"]: item for item in inspect(engine).get_columns("application_attempts")
         }
         assert "queued" in str(columns["status"]["default"] or "")
+        assert {"checkpoint_stage", "review_question", "review_reason"}.issubset(columns)
     finally:
         engine.dispose()
     command.downgrade(config, "base")
@@ -341,8 +471,14 @@ async def test_official_mcp_stdio_protocol_lists_exact_tools_and_calls_profile(
         "jobs_get",
         "candidate_get_profile",
         "candidate_get_resume_path",
+        "candidate_get_contact",
+        "candidate_get_education",
+        "candidate_get_links",
+        "candidate_get_work_authorization",
         "application_lookup_answer",
+        "stories_get",
         "application_start",
+        "application_update_checkpoint",
         "application_save_answer",
         "application_mark_verification_required",
         "application_get_checkpoint",

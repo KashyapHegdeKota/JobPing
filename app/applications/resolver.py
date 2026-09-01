@@ -236,6 +236,36 @@ class AnswerResolver:
             requires_review=not allowed,
         )
 
+    def get_stories(
+        self,
+        *,
+        story_ids: list[str] | None = None,
+        question: str | None = None,
+    ) -> dict[str, object]:
+        """Return a bounded subset of reusable story material for one answer.
+
+        The complete private story bank is never required at the MCP boundary.
+        Explicit ids are preferred; a question is resolved through the same
+        generation policy as ``resolve`` and only then may stories be returned.
+        """
+        if story_ids is not None and question is not None:
+            raise ValueError("provide story_ids or question, not both")
+        if story_ids is not None:
+            selected = [str(item) for item in story_ids]
+        elif question is not None:
+            resolution = self.resolve(question)
+            selected = resolution.relevant_stories if resolution.generation_allowed else []
+        else:
+            selected = []
+        if len(selected) > 20:
+            raise ValueError("at most 20 stories may be requested")
+        stories = {
+            story_id: self.stories[story_id]
+            for story_id in sorted(set(selected))
+            if story_id in self.stories
+        }
+        return {"story_ids": list(stories), "stories": stories}
+
 
 def lookup_answer(question: str, resolver: AnswerResolver) -> AnswerResolution:
     """Functional convenience wrapper used by MCP adapters and tests."""

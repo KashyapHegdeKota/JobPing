@@ -13,6 +13,7 @@ from app.db.models import (
     ApplicationAttempt,
     ApplicationFailure,
     ApplicationStatus,
+    CheckpointStage,
     VerificationType,
 )
 from app.db.repository import DatabaseRepository
@@ -37,8 +38,18 @@ class ApplicationService:
         self, job_id: int, current_url: str | None = None
     ) -> ApplicationAttempt:
         """Move a queued application into progress and save its browser URL."""
+        job = await self._repository.get_job_by_id(job_id)
+        if job is None:
+            raise ValueError(f"Job {job_id} not found")
+        if job.is_closed:
+            raise ValueError(f"Job {job_id} is closed")
         attempt = await self._repository.transition_application(
-            job_id, ApplicationStatus.IN_PROGRESS, current_url=current_url
+            job_id,
+            ApplicationStatus.IN_PROGRESS,
+            current_url=current_url,
+        )
+        await self._repository.update_application_checkpoint(
+            job_id, current_url=current_url, stage=CheckpointStage.OPENED
         )
         logger.info("Application %s started", job_id)
         return attempt
@@ -72,19 +83,31 @@ class ApplicationService:
         return attempt
 
     async def mark_needs_review(
-        self, job_id: int, current_url: str | None = None
+        self,
+        job_id: int,
+        current_url: str | None = None,
+        review_question: str | None = None,
+        review_reason: str | None = None,
     ) -> ApplicationAttempt:
         attempt = await self._repository.transition_application(
-            job_id, ApplicationStatus.NEEDS_REVIEW, current_url=current_url
+            job_id,
+            ApplicationStatus.NEEDS_REVIEW,
+            current_url=current_url,
+            review_question=review_question,
+            review_reason=review_reason,
         )
         logger.info("Application %s needs review", job_id)
         return attempt
 
     async def mark_review_required(
-        self, job_id: int, current_url: str | None = None
+        self,
+        job_id: int,
+        current_url: str | None = None,
+        review_question: str | None = None,
+        review_reason: str | None = None,
     ) -> ApplicationAttempt:
         """Compatibility spelling used by the MCP tool contract."""
-        return await self.mark_needs_review(job_id, current_url)
+        return await self.mark_needs_review(job_id, current_url, review_question, review_reason)
 
     async def mark_ready_to_submit(
         self, job_id: int, current_url: str | None = None
@@ -94,6 +117,18 @@ class ApplicationService:
         )
         logger.info("Application %s ready to submit", job_id)
         return attempt
+
+    async def update_checkpoint(
+        self,
+        job_id: int,
+        *,
+        current_url: str | None = None,
+        stage: CheckpointStage | str | None = None,
+    ) -> ApplicationAttempt:
+        """Record a meaningful browser checkpoint while preserving lifecycle state."""
+        return await self._repository.update_application_checkpoint(
+            job_id, current_url=current_url, stage=stage
+        )
 
     async def mark_ready(self, job_id: int, current_url: str | None = None) -> ApplicationAttempt:
         return await self.mark_ready_to_submit(job_id, current_url)
@@ -108,6 +143,11 @@ class ApplicationService:
         )
         logger.info("Application %s submitted", job_id)
         return attempt
+
+    async def list_by_status(self, status: ApplicationStatus) -> list[ApplicationCheckpoint]:
+        """Return safe checkpoint projections for a CLI or integration adapter."""
+        attempts = await self._repository.list_applications_by_status(status)
+        return [checkpoint_from_attempt(attempt) for attempt in attempts]
 
     async def mark_failed(
         self,

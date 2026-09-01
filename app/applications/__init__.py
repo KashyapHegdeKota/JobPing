@@ -5,6 +5,7 @@ from app.applications.models import (
     ApplicationFailure,
     ApplicationJob,
     ApplicationStatus,
+    CheckpointStage,
     VerificationType,
 )
 from app.applications.queue import ApplicationQueue
@@ -20,6 +21,7 @@ __all__ = [
     "ApplicationQueue",
     "ApplicationService",
     "ApplicationStatus",
+    "CheckpointStage",
     "VerificationType",
     "normalize_question",
 ]
