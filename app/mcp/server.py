@@ -34,8 +34,17 @@ from app.mcp.applications import (
     application_mark_verification_required,
     application_save_answer,
     application_start,
+    application_update_checkpoint,
+    stories_get,
 )
-from app.mcp.candidate import candidate_get_profile, candidate_get_resume_path
+from app.mcp.candidate import (
+    candidate_get_contact,
+    candidate_get_education,
+    candidate_get_links,
+    candidate_get_profile,
+    candidate_get_resume_path,
+    candidate_get_work_authorization,
+)
 from app.mcp.jobs import jobs_get as mcp_jobs_get
 from app.mcp.jobs import jobs_get_next as mcp_jobs_get_next
 from mcp.server import MCPServer
@@ -143,15 +152,56 @@ def create_mcp_server(
             raise ValueError("candidate profile is not configured")
         return candidate_get_resume_path(runtime.profile)
 
+    @mcp.tool(name="candidate_get_contact")
+    async def candidate_get_contact_tool() -> dict[str, object]:
+        if runtime.profile is None:
+            raise ValueError("candidate profile is not configured")
+        return candidate_get_contact(runtime.profile)
+
+    @mcp.tool(name="candidate_get_education")
+    async def candidate_get_education_tool() -> dict[str, object]:
+        if runtime.profile is None:
+            raise ValueError("candidate profile is not configured")
+        return candidate_get_education(runtime.profile)
+
+    @mcp.tool(name="candidate_get_links")
+    async def candidate_get_links_tool() -> dict[str, object]:
+        if runtime.profile is None:
+            raise ValueError("candidate profile is not configured")
+        return candidate_get_links(runtime.profile)
+
+    @mcp.tool(name="candidate_get_work_authorization")
+    async def candidate_get_work_authorization_tool() -> dict[str, object]:
+        if runtime.profile is None:
+            raise ValueError("candidate profile is not configured")
+        return candidate_get_work_authorization(runtime.profile)
+
     @mcp.tool(name="application_lookup_answer")
     async def application_lookup_answer_tool(question: str) -> dict[str, object]:
         return await application_lookup_answer(runtime.resolver, question)
+
+    @mcp.tool(name="stories_get")
+    async def stories_get_tool(
+        story_ids: list[str] | None = None, question: str | None = None
+    ) -> dict[str, object]:
+        return stories_get(runtime.resolver, story_ids=story_ids, question=question)
 
     @mcp.tool(name="application_start")
     async def application_start_tool(job_id: int, current_url: str) -> dict[str, object]:
         async with runtime.repository() as repository:
             service = ApplicationService(repository)
             return (await application_start(service, job_id, current_url)).model_dump(mode="json")
+
+    @mcp.tool(name="application_update_checkpoint")
+    async def application_update_checkpoint_tool(
+        job_id: int, current_url: str | None = None, stage: str | None = None
+    ) -> dict[str, object]:
+        async with runtime.repository() as repository:
+            return (
+                await application_update_checkpoint(
+                    ApplicationService(repository), job_id, current_url, stage
+                )
+            ).model_dump(mode="json")
 
     @mcp.tool(name="application_save_answer")
     async def application_save_answer_tool(
@@ -206,12 +256,19 @@ def create_mcp_server(
 
     @mcp.tool(name="application_mark_review_required")
     async def application_mark_review_required_tool(
-        job_id: int, current_url: str | None = None
+        job_id: int,
+        current_url: str | None = None,
+        review_question: str | None = None,
+        review_reason: str | None = None,
     ) -> dict[str, object]:
         async with runtime.repository() as repository:
             return (
                 await application_mark_review_required(
-                    ApplicationService(repository), job_id, current_url
+                    ApplicationService(repository),
+                    job_id,
+                    current_url,
+                    review_question,
+                    review_reason,
                 )
             ).model_dump(mode="json")
 
@@ -306,11 +363,43 @@ class JobPingMCPServer:
             raise ValueError("candidate profile is not configured")
         return candidate_get_resume_path(self.profile)
 
+    def candidate_get_contact(self) -> dict[str, object]:
+        if self.profile is None:
+            raise ValueError("candidate profile is not configured")
+        return candidate_get_contact(self.profile)
+
+    def candidate_get_education(self) -> dict[str, object]:
+        if self.profile is None:
+            raise ValueError("candidate profile is not configured")
+        return candidate_get_education(self.profile)
+
+    def candidate_get_links(self) -> dict[str, object]:
+        if self.profile is None:
+            raise ValueError("candidate profile is not configured")
+        return candidate_get_links(self.profile)
+
+    def candidate_get_work_authorization(self) -> dict[str, object]:
+        if self.profile is None:
+            raise ValueError("candidate profile is not configured")
+        return candidate_get_work_authorization(self.profile)
+
     async def application_lookup_answer(self, question: str) -> dict[str, object]:
         return await application_lookup_answer(self.resolver, question)
 
+    def stories_get(
+        self, *, story_ids: list[str] | None = None, question: str | None = None
+    ) -> dict[str, object]:
+        return stories_get(self.resolver, story_ids=story_ids, question=question)
+
     async def application_start(self, job_id: int, current_url: str) -> dict[str, object]:
         return (await application_start(self.service, job_id, current_url)).model_dump(mode="json")
+
+    async def application_update_checkpoint(
+        self, job_id: int, current_url: str | None = None, stage: str | None = None
+    ) -> dict[str, object]:
+        return (
+            await application_update_checkpoint(self.service, job_id, current_url, stage)
+        ).model_dump(mode="json")
 
     async def application_save_answer(self, job_id: int, **kwargs: object) -> dict[str, object]:
         return await application_save_answer(self.service, job_id, **kwargs)  # type: ignore[arg-type]
@@ -333,10 +422,16 @@ class JobPingMCPServer:
         ).model_dump(mode="json")
 
     async def application_mark_review_required(
-        self, job_id: int, current_url: str | None = None
+        self,
+        job_id: int,
+        current_url: str | None = None,
+        review_question: str | None = None,
+        review_reason: str | None = None,
     ) -> dict[str, object]:
         return (
-            await application_mark_review_required(self.service, job_id, current_url)
+            await application_mark_review_required(
+                self.service, job_id, current_url, review_question, review_reason
+            )
         ).model_dump(mode="json")
 
     async def application_mark_ready(
