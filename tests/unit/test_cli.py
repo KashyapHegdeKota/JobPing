@@ -4,7 +4,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 from app import cli
+from app.db.models import ApplicationStatus
 from app.pipelines.simplify_pipeline import PipelineResult
 from app.schemas.job import JobType
 from pytest import MonkeyPatch
@@ -47,6 +50,38 @@ def test_inspect_application_requires_database_url(monkeypatch: MonkeyPatch) -> 
     monkeypatch.delenv("DATABASE_URL", raising=False)
     result = runner.invoke(cli.app, ["inspect-application", "1"])
     assert result.exit_code == 2 and "DATABASE_URL is required" in result.output
+
+
+def test_applications_ready_and_review_views(monkeypatch: MonkeyPatch) -> None:
+    def attempt(status: ApplicationStatus) -> SimpleNamespace:
+        return SimpleNamespace(
+            job=SimpleNamespace(
+                id=481,
+                company=SimpleNamespace(name="Example Corp"),
+                title="Software Engineer",
+            ),
+            status=status,
+            current_url="https://example.test/apply",
+            updated_at=None,
+        )
+
+    async def fake_statuses(database_url: str, status: ApplicationStatus) -> list[SimpleNamespace]:
+        del database_url
+        return [attempt(status)]
+
+    monkeypatch.setattr(cli, "_application_statuses", fake_statuses)
+    ready = runner.invoke(
+        cli.app, ["applications", "ready", "--database-url", "sqlite+aiosqlite://"]
+    )
+    assert ready.exit_code == 0
+    assert "Ready to Submit" in ready.stdout and "Example Corp" in ready.stdout
+
+    review = runner.invoke(
+        cli.app,
+        ["applications", "review", "--database-url", "sqlite+aiosqlite://", "--json"],
+    )
+    assert review.exit_code == 0
+    assert '"status":"needs_review"' in review.stdout
 
 
 def test_run_simplify_parser_passes_options_and_prints_summary(monkeypatch: MonkeyPatch) -> None:

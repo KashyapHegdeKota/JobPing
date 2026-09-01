@@ -254,6 +254,19 @@ async def _application_verification(database_url: str) -> list[ApplicationAttemp
         await engine.dispose()
 
 
+async def _application_statuses(
+    database_url: str, status: ApplicationStatus
+) -> list[ApplicationAttempt]:
+    engine = create_async_engine(database_url)
+    sessions = async_sessionmaker(engine, expire_on_commit=False)
+    try:
+        async with sessions() as session:
+            async with session.begin():
+                return await DatabaseRepository(session).list_applications_by_status(status)
+    finally:
+        await engine.dispose()
+
+
 async def _application_status(job_id: int, database_url: str) -> ApplicationCheckpoint:
     engine = create_async_engine(database_url)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
@@ -354,6 +367,73 @@ def applications_verification(
             f"     {row['verification_type']}\n"
             f"     {row['resume_instruction'] or 'Complete verification in Chrome.'}"
         )
+
+
+def _application_list_command(
+    status: ApplicationStatus,
+    heading: str,
+    database_url: str | None,
+    json_output: bool,
+) -> None:
+    """Render a non-mutating application status view."""
+    try:
+        attempts = _asyncio_run(_application_statuses(_database_or_exit(database_url), status))
+    except typer.Exit:
+        raise
+    except Exception as exc:
+        typer.echo(f"Application list failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    rows = [
+        {
+            "job_id": attempt.job.id,
+            "company": attempt.job.company.name,
+            "title": attempt.job.title,
+            "status": ApplicationStatus(attempt.status).value,
+            "current_url": attempt.current_url,
+            "updated_at": attempt.updated_at.isoformat() if attempt.updated_at else None,
+            "review_question": getattr(attempt, "review_question", None),
+            "review_reason": getattr(attempt, "review_reason", None),
+        }
+        for attempt in attempts
+    ]
+    if json_output:
+        typer.echo(json.dumps(rows, separators=(",", ":")))
+        return
+    typer.echo(heading)
+    for row in rows:
+        typer.echo(f"\n{row['job_id']}  {row['company']}\n     {row['title']}")
+        if row["review_question"]:
+            typer.echo(f"     Question: {row['review_question']}")
+        if row["review_reason"]:
+            typer.echo(f"     Reason: {row['review_reason']}")
+        if row["updated_at"]:
+            typer.echo(f"     Updated {row['updated_at']}")
+
+
+@applications_app.command("ready")
+def applications_ready(
+    database_url: Annotated[str | None, typer.Option(envvar="DATABASE_URL")] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable JSON.")
+    ] = False,
+) -> None:
+    """List applications that passed review and are ready for explicit submission."""
+    _application_list_command(
+        ApplicationStatus.READY_TO_SUBMIT, "Ready to Submit", database_url, json_output
+    )
+
+
+@applications_app.command("review")
+def applications_review(
+    database_url: Annotated[str | None, typer.Option(envvar="DATABASE_URL")] = None,
+    json_output: Annotated[
+        bool, typer.Option("--json", help="Emit machine-readable JSON.")
+    ] = False,
+) -> None:
+    """List applications paused because a human review is required."""
+    _application_list_command(
+        ApplicationStatus.NEEDS_REVIEW, "Needs Review", database_url, json_output
+    )
 
 
 @applications_app.command("status")
