@@ -5,7 +5,7 @@
 JobPing can inspect supported ATS application forms without modifying or submitting them:
 
 ```text
-poetry run python -m app.cli inspect-application <job-id>
+poetry run python -m app.cli inspect-application (job-id)
 ```
 
 Currently supported: Greenhouse inspection. Lever and Workday inspection are planned.
