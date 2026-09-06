@@ -314,6 +314,69 @@ Key paths:
 - `alembic/`: schema migrations
 - `tests/`: unit and integration coverage
 
+## Customized BYOK tracker agents
+
+Use `trackers create` to ask an AI agent to design a tracker for a specific posting
+or a company's careers page. Describe your filters and the facts you want watched,
+such as location, salary, requirements, or application deadlines. The agent creates
+a validated plan and initial snapshot; subsequent checks report added, updated,
+and missing matching listings with before/after facts.
+
+PowerShell example (replace the URL and model with your own):
+
+```powershell
+# Read the key without putting its value into shell command history.
+$env:JOBPING_TRACKER_API_KEY = Read-Host "Provider API key" -MaskInput
+poetry run python -m app.cli trackers create "https://example.com/careers" --scope company --request "Watch remote engineering internships; track location, salary and deadline" --model YOUR_MODEL --interval 3600
+poetry run python -m app.cli trackers list
+poetry run python -m app.cli trackers show TRACKER_ID
+poetry run python -m app.cli trackers run TRACKER_ID
+poetry run python -m app.cli trackers run TRACKER_ID --watch --max-checks 24
+```
+
+Use `--scope posting` (the default) for an individual job URL. Copy `id` from the
+creation JSON or `trackers list`. `--watch` runs in the foreground until Ctrl+C;
+`--max-checks` limits polling attempts, including failures (0 means unlimited).
+Each tracker has its own persisted interval, with a minimum of 60 seconds.
+
+BYOK uses an HTTPS OpenAI-compatible `/chat/completions` endpoint. Set
+`--base-url https://your-provider.example/v1` and `--key-env YOUR_KEY_VARIABLE`
+for another provider. The provider/model must support JSON object responses and
+`max_completion_tokens` as described in the
+[Chat Completions API](https://developers.openai.com/api/reference/python/resources/chat/subresources/completions/methods/create).
+The model is required (`--model` or `JOBPING_TRACKER_MODEL`); no model or paid
+account is selected automatically. Keys are read from the process environment,
+never saved in tracker settings or sent to the job site. `.env` is not loaded by
+these commands. Creation makes two model requests; each polling attempt makes at
+most one. The request, tracking plan, and fetched page text go to your chosen
+provider and use that provider's billing and data policies.
+
+Plans and the latest 100 successful snapshots/change sets live in gitignored
+`private/trackers/`. Use `--store PATH` on any command, or `JOBPING_TRACKER_DIR`,
+to change the location. No PostgreSQL, Redis, migrations, or application submission
+are involved. Checks hold an exclusive tracker lock and replace the JSON file
+atomically. If a process is forcibly killed, remove its `<id>.lock` file only
+after verifying no check for that tracker is running.
+
+Current scope is a single public, server-rendered HTML page per tracker, with
+links resolved relative to its final URL. There is no company-name search,
+pagination/crawling, JavaScript rendering, login, or CAPTCHA handling. Supply a
+narrower page when the page exceeds 1 MB or 60,000 extracted characters. The
+agent rejects incomplete extractions, unknown job links, duplicate results, and
+invalid model responses; failures preserve the last good snapshot. Watch mode
+retries extraction/transport failures at the next interval. An HTTP 404 is an
+error, not proof of closure. A disappeared listing is `missing`; only explicit
+page evidence should produce `closed`. AI completeness and fact extraction can
+still be mistaken; inspect the saved plan and facts. The first successful check
+is a baseline with no change alerts. Alerts are CLI JSON and local history only.
+
+Tracker tests mock all source and provider traffic, including a complete CLI
+create/check/persist flow; they require no key or paid network calls:
+
+```text
+poetry run pytest tests/unit/test_trackers.py
+```
+
 ## Troubleshooting
 
 - **Compose reports blank PostgreSQL variables:** create `.env` from `.env.example` before

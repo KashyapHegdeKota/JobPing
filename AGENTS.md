@@ -66,6 +66,28 @@ Phase 2 also exposes `application_update_checkpoint`, narrow candidate fact tool
 `stories_get`; application submission remains valid only from `READY_TO_SUBMIT` and must
 follow explicit browser confirmation.
 
+## Customized tracker agents
+
+`app/trackers/` implements local read-only BYOK agents exposed by `trackers create`,
+`run`, `show`, and `list`. Creation generates a strict AI plan and a baseline;
+checks extract custom facts from one public HTML page and compare observations
+by source URL (not ingestion identity hashes). No generated code is executed.
+This subsystem is independent of SQL/Redis ingestion and application automation.
+Provider configuration stores an HTTPS OpenAI-compatible endpoint, model, and
+API-key environment-variable name only. Never persist keys or attach provider
+authorization to source requests; do not follow provider redirects. Model output
+and source content are untrusted. Reject invalid/incomplete observations rather
+than replacing the last successful snapshot. Missing does not imply closed.
+Source fetches are bounded and validate public addresses for each redirect;
+there is no browser rendering or pagination support. This is a local CLI, not
+a hardened multi-tenant URL fetching service.
+
+Tracker state lives in gitignored `private/trackers/` by default. Per-tracker
+exclusive lock files cover read/check/atomic replacement; retain 100 successful
+checks. Watch mode runs foreground with bounded optional attempts and propagates
+cancellation, releasing owned clients and locks. Keep tracker tests network-free
+using injected HTTP transports; no live keys or developer database mutation.
+
 ## Ingestion and scraper behavior
 
 - `BaseScraper` owns a client only when it creates it, records run timing/count/success, and exposes async cleanup/context-manager behavior. Preserve caller ownership for injected clients.
