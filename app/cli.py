@@ -26,8 +26,10 @@ from app.scrapers.browser import BrowserManager
 from app.scrapers.github_client import GitHubClient
 from app.services.db_audit import AuditReport, DatabaseAuditService
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
+from app.trackers.cli import app as trackers_app
 
 app = typer.Typer(help="Run JobPing ingestion tools.", no_args_is_help=True)
+app.add_typer(trackers_app, name="trackers")
 applications_app = typer.Typer(
     help="Inspect and control application checkpoints.", no_args_is_help=True
 )
