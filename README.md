@@ -17,7 +17,7 @@ The `private/` directory is intentionally gitignored; use the sanitized files in
 The application backend stores one durable checkpoint per job in
 `application_attempts` (including its current browser URL and coarse checkpoint stage)
 and non-secret answer audit records in `application_answers`. Apply the
-`0002_application_agent` and `0003_application_checkpoint_stage` Alembic migrations
+`0002_application_agent` and `0003_checkpoint_stage` Alembic migrations
 after the initial schema. The
 candidate profile loader validates `private/candidate.json` and its resume path; use
 the sanitized candidate, answer, story, and rule files in `examples/` as templates.

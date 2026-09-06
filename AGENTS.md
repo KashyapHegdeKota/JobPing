@@ -57,7 +57,7 @@ Normalized application forms use ATS-independent schemas in `app/schemas/applica
 The autonomous application backend uses `app/mcp/` for high-level business tools
 and `app/applications/` for deterministic queue, answer resolution, and state
 transitions. `ApplicationAttempt` and `ApplicationAnswer` are persisted by the
-`0002_application_agent` migration; `0003_application_checkpoint_stage` adds the
+`0002_application_agent` migration; `0003_checkpoint_stage` adds the
 coarse `checkpoint_stage` resume field. Codex Chrome owns live browser perception and
 interaction; JobPing must not add application Playwright filling, submission, OTP
 retrieval, CAPTCHA bypass, or secret storage. Verification checkpoints store only
