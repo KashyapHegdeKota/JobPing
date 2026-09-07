@@ -13,6 +13,7 @@ import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from app.applications.resolver import AnswerResolver, normalize_question
 from app.applications.service import ApplicationService
 from app.candidate.models import CandidateProfile
@@ -413,6 +414,8 @@ def test_application_migration_upgrade_and_downgrade_on_temporary_sqlite(
     database = tmp_path / "migration.sqlite3"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database}")
     config = Config("alembic.ini")
+    revisions = ScriptDirectory.from_config(config).walk_revisions()
+    assert all(len(revision.revision) <= 32 for revision in revisions)
     command.upgrade(config, "head")
     engine = create_engine(f"sqlite:///{database}")
     try:

@@ -6,6 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     CheckConstraint,
     DateTime,
@@ -13,6 +14,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -251,3 +253,91 @@ class ApplicationAnswer(Base):
     )
 
     application: Mapped[ApplicationAttempt] = relationship(back_populates="answers")
+
+
+class NotificationLock(Base):
+    __tablename__ = "notification_lock"
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+
+class Subscriber(Base):
+    __tablename__ = "notification_subscribers"
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True)
+    verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    alerts: Mapped[bool] = mapped_column(Boolean, default=False)
+    recap: Mapped[bool] = mapped_column(Boolean, default=False)
+    job_types: Mapped[list[str]] = mapped_column(JSON, default=lambda: ["internship", "new_grad"])
+    seasons: Mapped[list[int]] = mapped_column(JSON, default=lambda: [2026, 2027])
+    timezone: Mapped[str] = mapped_column(String(64), default="UTC")
+    opted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_recap: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    provider: Mapped[str] = mapped_column(String(16), default="shared")
+    sender: Mapped[str | None] = mapped_column(String(320))
+    key_ciphertext: Mapped[str | None] = mapped_column(Text)
+    webhook_ciphertext: Mapped[str | None] = mapped_column(Text)
+    webhook_id: Mapped[str] = mapped_column(String(64), unique=True)
+    connection_version: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(64), default="ready")
+    suppressed: Mapped[bool] = mapped_column(Boolean, default=False)
+    unsubscribe_token: Mapped[str] = mapped_column(String(64), unique=True)
+
+
+class DiscoveryEvent(Base):
+    __tablename__ = "notification_events"
+    job_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"), primary_key=True)
+    discovered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+
+
+class JobMatch(Base):
+    __tablename__ = "notification_matches"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subscriber_id: Mapped[str] = mapped_column(
+        ForeignKey("notification_subscribers.id"), index=True
+    )
+    job_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"))
+    discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    __table_args__ = (UniqueConstraint("subscriber_id", "job_id"),)
+
+
+class EmailDelivery(Base):
+    __tablename__ = "notification_deliveries"
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    subscriber_id: Mapped[str] = mapped_column(
+        ForeignKey("notification_subscribers.id"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16))
+    dedupe_key: Mapped[str] = mapped_column(String(255), unique=True)
+    job_ids: Mapped[list[int]] = mapped_column(JSON)
+    window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    status: Mapped[str] = mapped_column(String(32), default="pending", index=True)
+    due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_attempt: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    attempts: Mapped[int] = mapped_column(default=0)
+    payload: Mapped[dict | None] = mapped_column(JSON)
+    account: Mapped[str | None] = mapped_column(String(128), index=True)
+    connection_version: Mapped[str | None] = mapped_column(String(64))
+    provider_id: Mapped[str | None] = mapped_column(String(128), index=True)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+
+
+class EmailWebhookEvent(Base):
+    __tablename__ = "notification_webhooks"
+    id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EmailAccount(Base):
+    __tablename__ = "notification_accounts"
+    id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    blocked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error_code: Mapped[str | None] = mapped_column(String(64))

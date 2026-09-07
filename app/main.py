@@ -6,8 +6,11 @@ import os
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, Response
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
@@ -137,6 +140,17 @@ def create_app(
         allow_headers=["*"],
     )
     application.include_router(api_v1_router)
+
+    @application.exception_handler(RequestValidationError)
+    async def redact_provider_validation(
+        request: Request, error: RequestValidationError
+    ) -> Response:
+        if request.url.path.startswith("/api/v1/me/email-provider"):
+            return JSONResponse(
+                status_code=422, content={"detail": "Invalid email provider settings"}
+            )
+        return await request_validation_exception_handler(request, error)
+
     return application
 
 

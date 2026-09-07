@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -23,6 +24,7 @@ from app.db.models import (
     ApplicationStatus,
     CheckpointStage,
     Company,
+    DiscoveryEvent,
     JobPosting,
     JobType,
     StatusLog,
@@ -64,8 +66,15 @@ class DatabaseRepository:
     committed or rolled back as a single unit.
     """
 
-    def __init__(self, session: AsyncSession, publisher: EventPublisher | None = None) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        publisher: EventPublisher | None = None,
+        *,
+        suppress_notifications: bool = False,
+    ) -> None:
         self._session = session
+        self._suppress_notifications = suppress_notifications
         self._publisher = publisher
         self._publish_tasks: set[asyncio.Task[None]] = set()
         if publisher is not None and not session.sync_session.info.get("jobping_events_configured"):
@@ -182,6 +191,8 @@ class DatabaseRepository:
                 if changed:
                     existing.updated_at = normalized_job.updated_at or datetime.now(UTC)
             await self._session.flush()
+            if was_created and not existing.is_closed:
+                await self._record_discovery(existing.id)
             if self._publisher is not None and (was_created or changed):
                 event_type = JobEventType.JOB_CREATED if was_created else JobEventType.JOB_UPDATED
                 self._session.sync_session.info.setdefault(_PENDING_EVENTS_KEY, []).append(
@@ -710,6 +721,8 @@ class DatabaseRepository:
                         }
                     )
                 was_created = old is None
+                if was_created and not posting.is_closed:
+                    await self._record_discovery(posting.id)
                 was_changed = old is not None and any(
                     old[key] != getattr(posting, key) for key in old
                 )
@@ -719,6 +732,19 @@ class DatabaseRepository:
                 await self._session.execute(insert(StatusLog).values(status_values))
             await self._session.flush()
             return [by_hash[base_hash] for base_hash in hashes]
+
+    async def _record_discovery(self, job_id: int) -> None:
+        if (
+            self._suppress_notifications
+            or os.environ.get("NOTIFICATIONS_SUPPRESS_DISCOVERY", "false").lower() == "true"
+        ):
+            return
+        insert = (
+            postgresql_insert if self._session.bind.dialect.name == "postgresql" else sqlite_insert
+        )
+        await self._session.execute(
+            insert(DiscoveryEvent).values(job_id=job_id, processed=False).on_conflict_do_nothing()
+        )
 
     def _queue_job_event(self, posting: JobPosting, *, was_created: bool) -> None:
         event_type = JobEventType.JOB_CREATED if was_created else JobEventType.JOB_UPDATED

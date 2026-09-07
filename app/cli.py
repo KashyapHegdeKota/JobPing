@@ -8,6 +8,7 @@ import os
 import selectors
 from collections.abc import Awaitable
 from datetime import timedelta
+from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -901,6 +902,23 @@ def run_server(
         reload=reload,
         log_level=normalized_log_level,
     )
+
+
+@app.command("notifications-worker")
+def notifications_worker(once: bool = False) -> None:
+    """Process the durable email queue; sending is disabled unless explicitly configured."""
+    from app.notifications.worker import serve
+
+    _asyncio_run(serve(once=once))
+
+
+@app.command("notifications-preview")
+def notifications_preview(output: Path = Path(".pytest_cache/email-preview")) -> None:
+    """Write synthetic HTML email previews without sending anything."""
+    from app.notifications.preview import preview
+
+    preview(output)
+    typer.echo(f"Email previews written to {output}")
 
 
 def main() -> None:

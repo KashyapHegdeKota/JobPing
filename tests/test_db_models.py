@@ -37,6 +37,13 @@ class DatabaseModelsTestCase(unittest.TestCase):
                 "status_logs",
                 "application_attempts",
                 "application_answers",
+                "notification_lock",
+                "notification_accounts",
+                "notification_subscribers",
+                "notification_events",
+                "notification_matches",
+                "notification_deliveries",
+                "notification_webhooks",
             },
         )
         index_names = {index["name"] for index in inspector.get_indexes("job_postings")}
