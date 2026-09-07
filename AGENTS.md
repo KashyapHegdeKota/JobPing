@@ -48,6 +48,25 @@ Never reproduce hash logic ad hoc; call `app.services.hasher`.
 
 Redis classification and PostgreSQL writes are separate systems, not one distributed transaction. The ATS pipeline classifies before SQL persistence; a SQL failure can leave Redis ahead until reconciliation or TTL expiry. Do not publish externally visible events before the SQL transaction is safely persisted. Full Simplify sync may persist `NO_OP` rows to repair an empty database behind a warm cache.
 
+## Email notifications
+
+`app/notifications/` owns opt-in Resend delivery and Firebase-verified preferences.
+Migration `0004_notifications` adds subscribers, discovery events, matches, delivery
+records, account pauses and webhook deduplication. Both repository save paths record
+new open-job events inside the SQL transaction, independently of Redis. Bootstrap
+callers must use `suppress_notifications=True` or `NOTIFICATIONS_SUPPRESS_DISCOVERY=true`.
+Never send from ingestion or use Redis Pub/Sub as the durable email queue.
+
+The separate `notifications-worker` VM process matches jobs and creates 8 PM local
+recaps, using database locks, persisted leases, frozen payloads and stable Resend
+idempotency keys. Sending defaults off. Preserve conservative daily/31-day budgets,
+recap reservations, verified-recipient checks and no automatic BYOK fallback.
+Do not retry uncertain sends beyond the provider idempotency window. Secrets are
+versioned Fernet ciphertext, with keys outside the database; never expose them in
+responses, validation errors, logs or client storage. Webhook signatures and ownership
+checks are mandatory. Tests must use isolated databases and mocked Firebase/HTTP.
+See `docs/notifications.md` for configuration, rollout and recovery contracts.
+
 ## Application inspection
 
 Phase 1 supports read-only Greenhouse application inspection through `python -m app.cli inspect-application <job_id>`. `ApplicationService` loads an open job through `DatabaseRepository`, detects its ATS, owns the injected `BrowserManager` lifecycle, navigates to the application URL, and delegates DOM normalization to `GreenhouseApplicant`. Lever and Workday are detected but intentionally rejected as unsupported for inspection.

@@ -1,5 +1,13 @@
 # JobPing
 
+## Email notifications
+
+Opt-in job alerts, 8 PM daily recaps, and optional encrypted Resend BYOK settings
+are available from the UI Profile page. Run `poetry run python -m app.cli notifications-worker`
+on the VM; sending defaults to disabled. See [notification setup and operations](docs/notifications.md)
+for domain verification, Firebase credentials, migrations, quotas and systemd setup.
+Generate offline HTML samples with `poetry run python -m app.cli notifications-preview`.
+
 ## Application Inspection
 
 JobPing can inspect supported ATS application forms without modifying or submitting them:

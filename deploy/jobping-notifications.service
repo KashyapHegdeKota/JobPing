@@ -1,0 +1,23 @@
+[Unit]
+Description=JobPing durable email notifications
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jobping
+Group=jobping
+WorkingDirectory=/opt/jobping
+EnvironmentFile=/etc/jobping/notifications.env
+ExecStart=/opt/jobping/.venv/bin/python -m app.cli notifications-worker
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+Environment=PYTHONDONTWRITEBYTECODE=1
+
+[Install]
+WantedBy=multi-user.target
