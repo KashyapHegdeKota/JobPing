@@ -81,7 +81,7 @@ async def list_jobs(
 
     jobs_statement = (
         filtered.options(joinedload(JobPosting.company))
-        .order_by(JobPosting.created_at.desc(), JobPosting.id.desc())
+        .order_by(func.coalesce(JobPosting.posted_at, JobPosting.created_at).desc(), JobPosting.id.desc())
         .offset((page - 1) * page_size)
         .limit(page_size)
     )

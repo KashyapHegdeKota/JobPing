@@ -36,6 +36,7 @@ class JobResponse(APIResponse):
     season: int = Field(ge=2020, le=2100)
     job_type: JobType
     is_closed: bool
+    posted_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
 
