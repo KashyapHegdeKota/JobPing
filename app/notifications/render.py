@@ -38,7 +38,7 @@ async def job_rows(session: AsyncSession, ids: list[int]) -> list[dict]:
             date_text = f"Posted {job.posted_at.strftime('%b %d, %Y').replace(' 0', ' ')}"
         else:
             date_text = f"Discovered {job.created_at.strftime('%b %d, %Y').replace(' 0', ' ')}"
-            
+
         result.append(
             {
                 "id": job.id,
