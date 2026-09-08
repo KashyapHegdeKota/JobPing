@@ -179,6 +179,7 @@ class DatabaseRepository:
             changed = False
             if was_created:
                 existing = JobPosting(base_hash=normalized_job.base_hash, **values)
+                existing.posted_at = normalized_job.posted_at
                 if normalized_job.created_at is not None:
                     existing.created_at = normalized_job.created_at
                 if normalized_job.updated_at is not None:
@@ -188,6 +189,12 @@ class DatabaseRepository:
                 changed = any(getattr(existing, key) != value for key, value in values.items())
                 for key, value in values.items():
                     setattr(existing, key, value)
+                if normalized_job.posted_at is not None:
+                    current_posted_at = existing.posted_at
+                    if current_posted_at is not None and current_posted_at.tzinfo is None:
+                        current_posted_at = current_posted_at.replace(tzinfo=UTC)
+                    if current_posted_at is None or normalized_job.posted_at < current_posted_at:
+                        existing.posted_at = normalized_job.posted_at
                 if changed:
                     existing.updated_at = normalized_job.updated_at or datetime.now(UTC)
             await self._session.flush()
@@ -672,6 +679,7 @@ class DatabaseRepository:
                         "season": job.season,
                         "job_type": JobType(job.job_type),
                         "is_closed": job.is_closed,
+                        "posted_at": job.posted_at,
                         "created_at": job.created_at or now,
                         "updated_at": job.updated_at or now,
                     }
@@ -700,6 +708,12 @@ class DatabaseRepository:
                     "season": excluded.season,
                     "job_type": excluded.job_type,
                     "is_closed": excluded.is_closed,
+                    "posted_at": case(
+                        (JobPosting.posted_at.is_(None), excluded.posted_at),
+                        (excluded.posted_at.is_(None), JobPosting.posted_at),
+                        (JobPosting.posted_at < excluded.posted_at, JobPosting.posted_at),
+                        else_=excluded.posted_at,
+                    ),
                     "updated_at": case((changed, excluded.updated_at), else_=JobPosting.updated_at),
                 },
             ).returning(JobPosting)

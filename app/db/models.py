@@ -133,6 +133,7 @@ class JobPosting(Base):
         nullable=False,
     )
     is_closed: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false")
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
