@@ -154,7 +154,9 @@ async def _backfill(
         async with sessions() as session:
             rows = (
                 await session.execute(
-                    select(JobPosting.id, JobPosting.apply_url, JobPosting.posted_at).order_by(JobPosting.id)
+                    select(JobPosting.id, JobPosting.apply_url, JobPosting.posted_at).order_by(
+                        JobPosting.id
+                    )
                 )
             ).all()
             LOGGER.info("Loaded %d jobs from the database", len(rows))
@@ -196,7 +198,7 @@ async def _backfill(
                     if apply_url not in timestamps:
                         unmatched += 1
                         continue
-                    
+
                     new_posted_at = timestamps[apply_url]
                     if current_posted_at is None:
                         populated += 1
@@ -208,7 +210,8 @@ async def _backfill(
                         unchanged += 1
 
                 LOGGER.info(
-                    "Single-pass history scan: populated=%d moved_earlier=%d unchanged=%d unmatched=%d",
+                    "Single-pass history scan: populated=%d moved_earlier=%d "
+                    "unchanged=%d unmatched=%d",
                     populated,
                     moved_earlier,
                     unchanged,

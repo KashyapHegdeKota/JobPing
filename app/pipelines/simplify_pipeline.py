@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
 from app.db.repository import DatabaseRepository
 from app.schemas.job import JobType, NormalizedJob, RawJobPayload
-from app.services.posting_dates import parse_source_posted_at
 from app.scrapers.git_patch_parser import ChangedLine, ChangeKind, GitPatchParser
 from app.scrapers.github_client import (
     GitHubClient,
@@ -18,6 +17,7 @@ from app.scrapers.github_client import (
 from app.scrapers.markdown_parser import MarkdownTableParser, coalesce_html_table_rows
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 from app.services.hasher import generate_base_hash, generate_content_hash
+from app.services.posting_dates import parse_source_posted_at
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,7 +89,7 @@ class SimplifyPipeline:
         """Process an already-fetched commit detail without external persistence."""
         result = PipelineResult(commit_sha=detail.sha)
         candidates: list[tuple[RawJobPayload, ChangeKind, str]] = []
-        observed_at = detail.authored_at or datetime.now(timezone.utc)
+        observed_at = detail.authored_at or datetime.now(UTC)
         for parsed_patch in GitPatchParser.parse_files(
             detail.files, target_readme_paths=self._targets
         ):
@@ -141,7 +141,13 @@ class SimplifyPipeline:
                 content_hash = generate_content_hash(
                     base_hash, raw.apply_url or "", str(raw.location or ""), is_closed
                 )
-                posted_at = parse_source_posted_at(raw.payload.get("date_posted"), observed_at=raw.observed_at) if raw.observed_at else None
+                posted_at = (
+                    parse_source_posted_at(
+                        raw.payload.get("date_posted"), observed_at=raw.observed_at
+                    )
+                    if raw.observed_at
+                    else None
+                )
                 job = NormalizedJob(
                     company_name=raw.company,
                     title=raw.title or "",
@@ -173,7 +179,7 @@ class SimplifyPipeline:
         """Parse and classify the raw current file without commit-diff processing."""
         source = await self._github.get_file_text(owner, repo, path, ref=ref)
         result = PipelineResult(commit_sha=source.sha)
-        observed_at = datetime.now(timezone.utc)
+        observed_at = datetime.now(UTC)
         parser = MarkdownTableParser(source="simplify_github", source_id=f"{source.sha}:{path}")
         candidates: list[tuple[RawJobPayload, ChangeKind, str]] = []
         raw_lines = tuple(ChangedLine(ChangeKind.ADDED, line) for line in source.text.splitlines())
