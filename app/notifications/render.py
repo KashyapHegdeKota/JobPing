@@ -32,19 +32,27 @@ async def job_rows(session: AsyncSession, ids: list[int]) -> list[dict]:
         .where(JobPosting.id.in_(ids))
         .order_by(Company.name, JobPosting.title, JobPosting.id)
     )
-    return [
-        {
-            "id": job.id,
-            "company": company,
-            "title": job.title,
-            "location": job.location,
-            "job_type": job.job_type.value.replace("_", " "),
-            "season": job.season,
-            "closed": job.is_closed,
-            "apply_url": safe_url(job.apply_url),
-        }
-        for job, company in rows
-    ]
+    result = []
+    for job, company in rows:
+        if job.posted_at:
+            date_text = f"Posted {job.posted_at.strftime('%b %d, %Y').replace(' 0', ' ')}"
+        else:
+            date_text = f"Discovered {job.created_at.strftime('%b %d, %Y').replace(' 0', ' ')}"
+            
+        result.append(
+            {
+                "id": job.id,
+                "company": company,
+                "title": job.title,
+                "location": job.location,
+                "job_type": job.job_type.value.replace("_", " "),
+                "season": job.season,
+                "closed": job.is_closed,
+                "apply_url": safe_url(job.apply_url),
+                "date_text": date_text,
+            }
+        )
+    return result
 
 
 async def payload(session: AsyncSession, delivery: EmailDelivery, user: Subscriber) -> dict:
@@ -95,7 +103,7 @@ async def payload(session: AsyncSession, delivery: EmailDelivery, user: Subscrib
         lines.extend(
             [
                 f"{job['company']} — {job['title']}",
-                f"{job['location']} | {job['job_type']} | {job['season']}",
+                f"{job['location']} | {job['job_type']} | {job['season']} | {job['date_text']}",
                 "Applications closed" if job["closed"] else job["apply_url"],
                 "",
             ]
