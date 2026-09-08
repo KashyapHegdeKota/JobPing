@@ -49,6 +49,7 @@ class NormalizedJob(BaseModel):
     season: int = Field(ge=2026, le=2027)
     job_type: JobType
     is_closed: bool = False
+    posted_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -62,7 +63,7 @@ class NormalizedJob(BaseModel):
             return aliases.get(normalized, normalized)
         return value
 
-    @field_validator("created_at", "updated_at")
+    @field_validator("posted_at", "created_at", "updated_at")
     @classmethod
     def require_timezone(cls, value: datetime | None) -> datetime | None:
         """Reject ambiguous timestamps at the persistence boundary."""

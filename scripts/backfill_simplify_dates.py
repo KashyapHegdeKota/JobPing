@@ -154,7 +154,9 @@ async def _backfill(
         async with sessions() as session:
             rows = (
                 await session.execute(
-                    select(JobPosting.id, JobPosting.apply_url).order_by(JobPosting.id)
+                    select(JobPosting.id, JobPosting.apply_url, JobPosting.posted_at).order_by(
+                        JobPosting.id
+                    )
                 )
             ).all()
             LOGGER.info("Loaded %d jobs from the database", len(rows))
@@ -172,7 +174,7 @@ async def _backfill(
                     )
                 )
 
-                target_urls = {apply_url for _, apply_url in rows}
+                target_urls = {apply_url for _, apply_url, _ in rows}
                 history_maps = await asyncio.gather(
                     *(
                         asyncio.to_thread(collect_earliest_url_timestamps, repository, target_urls)
@@ -185,22 +187,46 @@ async def _backfill(
                         previous = timestamps.get(apply_url)
                         if previous is None or timestamp < previous:
                             timestamps[apply_url] = timestamp
-                updates = [
-                    {"_job_id": job_id, "_created_at": timestamps[apply_url]}
-                    for job_id, apply_url in rows
-                    if apply_url in timestamps
-                ]
+
+                populated = 0
+                moved_earlier = 0
+                unchanged = 0
+                unmatched = 0
+                updates = []
+
+                for job_id, apply_url, current_posted_at in rows:
+                    if apply_url not in timestamps:
+                        unmatched += 1
+                        continue
+
+                    new_posted_at = timestamps[apply_url]
+                    if current_posted_at is None:
+                        populated += 1
+                        updates.append({"_job_id": job_id, "_posted_at": new_posted_at})
+                    elif new_posted_at < current_posted_at:
+                        moved_earlier += 1
+                        updates.append({"_job_id": job_id, "_posted_at": new_posted_at})
+                    else:
+                        unchanged += 1
+
                 LOGGER.info(
-                    "Single-pass history scan matched %d/%d jobs",
-                    len(updates),
-                    len(rows),
+                    "Single-pass history scan: populated=%d moved_earlier=%d "
+                    "unchanged=%d unmatched=%d",
+                    populated,
+                    moved_earlier,
+                    unchanged,
+                    unmatched,
                 )
 
             if updates and not dry_run:
                 await session.execute(
                     update(JobPosting.__table__)
                     .where(JobPosting.id == bindparam("_job_id"))
-                    .values(created_at=bindparam("_created_at")),
+                    .where(
+                        (JobPosting.posted_at.is_(None))
+                        | (JobPosting.posted_at > bindparam("_posted_at"))
+                    )
+                    .values(posted_at=bindparam("_posted_at")),
                     updates,
                 )
                 await session.commit()
@@ -208,7 +234,7 @@ async def _backfill(
             elif dry_run:
                 LOGGER.info("Dry run: no database rows were changed")
 
-            return len(rows), len(updates), len(rows) - len(updates)
+            return len(rows), populated, moved_earlier, unchanged, unmatched
     finally:
         await engine.dispose()
 
