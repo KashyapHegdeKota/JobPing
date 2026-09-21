@@ -13,7 +13,12 @@ from app.db.repository import DatabaseRepository
 from app.schemas.job import JobType, NormalizedJob, RawJobPayload
 from app.scrapers.base import BaseScraper
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
-from app.services.hasher import generate_base_hash, generate_content_hash
+from app.services.hasher import (
+    canonicalize_apply_url,
+    choose_canonical_apply_url,
+    generate_base_hash,
+    generate_content_hash,
+)
 from app.services.posting_dates import parse_source_posted_at
 
 
@@ -99,7 +104,7 @@ class ATSPipeline:
         """Run each scraper and persist non-no-op classifications."""
         result = ATSPipelineResult()
         seen: set[str] = set()
-        pending: list[NormalizedJob] = []
+        candidates: list[tuple[RawJobPayload, NormalizedJob]] = []
         for scraper in self._scrapers:
             try:
                 rows = await scraper.run()
@@ -125,22 +130,49 @@ class ATSPipeline:
                     )
                     continue
                 seen.add(job.base_hash)
-                state = await self._deduplicator.classify_and_update(
-                    base_hash=job.base_hash,
-                    content_hash=job.content_hash,
-                    is_closed=job.is_closed,
-                )
-                if state is not DeduplicationState.NO_OP:
-                    pending.append(job)
-                result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
+                candidates.append((raw, job))
+
+        if self._session is not None and not self._session.in_transaction():
+            async with self._session.begin():
+                await self._classify_and_persist(result, candidates)
+        else:
+            await self._classify_and_persist(result, candidates)
+        return result
+
+    async def _classify_and_persist(
+        self,
+        result: ATSPipelineResult,
+        candidates: list[tuple[RawJobPayload, NormalizedJob]],
+    ) -> None:
+        """Batch-reconcile, classify, and persist candidates in one SQL transaction."""
+        existing_by_hash = (
+            await self._repository.get_job_postings_by_base_hashes(
+                [job.base_hash for _, job in candidates]
+            )
+            if self._repository is not None
+            else {}
+        )
+        pending: list[NormalizedJob] = []
+        for raw, candidate in candidates:
+            existing = existing_by_hash.get(candidate.base_hash)
+            job = self._reconcile_persisted_url(
+                candidate, existing.apply_url if existing is not None else None
+            )
+            state = await self._deduplicator.classify_and_update(
+                base_hash=job.base_hash,
+                content_hash=job.content_hash,
+                is_closed=job.is_closed,
+            )
+            if state is not DeduplicationState.NO_OP:
+                pending.append(job)
+            result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
         if pending and self._repository is not None:
             await self._repository.bulk_upsert_job_postings(pending)
-        return result
 
     def _normalize(self, raw: RawJobPayload) -> NormalizedJob:
         company = (raw.company or "").strip()
         title = (raw.title or "").strip()
-        apply_url = (raw.apply_url or "").strip()
+        apply_url = canonicalize_apply_url((raw.apply_url or "").strip())
         location = self._location(raw.location)
         closed = self._closed(raw.is_closed)
         base_hash = generate_base_hash(company, title)
@@ -162,6 +194,21 @@ class ATSPipeline:
             is_closed=closed,
             posted_at=posted_at,
         )
+
+    @staticmethod
+    def _reconcile_persisted_url(job: NormalizedJob, existing_url: str | None) -> NormalizedJob:
+        """Resolve the effective URL before Redis sees the content state."""
+        incoming_url = str(job.apply_url)
+        effective_url = choose_canonical_apply_url(existing_url or "", incoming_url)
+        if effective_url == incoming_url:
+            return job
+        content_hash = generate_content_hash(
+            job.base_hash,
+            effective_url,
+            job.location,
+            job.is_closed,
+        )
+        return job.model_copy(update={"apply_url": effective_url, "content_hash": content_hash})
 
     @staticmethod
     def _location(value: str | list[str] | None) -> str:

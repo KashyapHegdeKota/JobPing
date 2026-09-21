@@ -153,3 +153,71 @@ async def test_database_failure_rolls_back_and_is_not_hidden(
         assert await session.scalar(select(func.count()).select_from(JobPosting)) == 0
         assert len(dedupe.values) == 1  # documented Redis-ahead limitation
     await scraper.aclose()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_batch_loads_existing_postings_once(
+    sessions: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    scraper = FakeScraper(
+        "greenhouse",
+        "Acme",
+        [
+            row(),
+            RawJobPayload(
+                source="greenhouse",
+                source_id="2",
+                company="Beta",
+                title="Data Engineer",
+                apply_url="https://example.com/jobs/2",
+                location="Remote",
+            ),
+        ],
+    )
+    async with sessions() as session:
+        pipeline = ATSPipeline(
+            [scraper],
+            MemoryDeduplicator(),
+            session,
+            season=2027,
+            job_type=JobType.NEW_GRAD,
+        )
+        calls: list[tuple[str, ...]] = []
+        original = pipeline._repository.get_job_postings_by_base_hashes
+
+        async def count_batch(base_hashes: Sequence[str]) -> dict[str, JobPosting]:
+            calls.append(tuple(base_hashes))
+            return await original(base_hashes)
+
+        async def reject_single(base_hash: str) -> JobPosting | None:
+            del base_hash
+            raise AssertionError("pipeline must not perform per-row reconciliation reads")
+
+        monkeypatch.setattr(pipeline._repository, "get_job_postings_by_base_hashes", count_batch)
+        monkeypatch.setattr(pipeline._repository, "get_job_posting_by_base_hash", reject_single)
+        result = await pipeline.run()
+
+        assert len(result.outcomes) == 2
+        assert len(calls) == 1
+        assert len(calls[0]) == 2
+    await scraper.aclose()
+
+
+@pytest.mark.asyncio
+async def test_location_formatting_is_stable_but_material_change_updates(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    dedupe = MemoryDeduplicator()
+    scenarios = [
+        (row(location="Remote, U.S."), DeduplicationState.NEW_ROLE),
+        (row(location="  remote,   u.s.  "), DeduplicationState.NO_OP),
+        (row(location="Austin, TX"), DeduplicationState.ROLE_UPDATED),
+    ]
+    async with sessions() as session:
+        for payload, expected in scenarios:
+            scraper = FakeScraper(payload.source, "Acme", [payload])
+            result = await ATSPipeline(
+                [scraper], dedupe, session, season=2027, job_type=JobType.INTERNSHIP
+            ).run()
+            assert result.outcomes[0].state is expected
+            await scraper.aclose()

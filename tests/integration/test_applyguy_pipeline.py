@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import httpx
 import pytest
-from app.db.models import Base, JobPosting
+from app.db.models import Base, DiscoveryEvent, JobPosting
 from app.pipelines.applyguy_pipeline import ApplyGuyPipeline
 from app.pipelines.ats_pipeline import ATSPipeline
 from app.pipelines.simplify_pipeline import SimplifyPipeline
@@ -16,7 +16,7 @@ from app.scrapers.base import BaseScraper
 from app.scrapers.github_client import GitHubCommitDetail, GitHubFilePatch
 from app.services.deduplicator import DeduplicationState
 from sqlalchemy import func, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 
 class MemoryDeduplicator:
@@ -72,6 +72,102 @@ def applyguy_payload() -> dict[str, object]:
             }
         ],
     }
+
+
+def applyguy_fallback_payload() -> dict[str, object]:
+    payload = applyguy_payload()
+    job = payload["jobs"][0]
+    assert isinstance(job, dict)
+    job.pop("listingUrl")
+    return payload
+
+
+async def run_direct(dedupe: MemoryDeduplicator, session: AsyncSession) -> DeduplicationState:
+    scraper = OneRowScraper(greenhouse_row())
+    try:
+        result = await ATSPipeline(
+            [scraper], dedupe, session, season=2027, job_type=JobType.INTERNSHIP
+        ).run()
+        return result.outcomes[0].state
+    finally:
+        await scraper.aclose()
+
+
+async def run_applyguy_fallback(
+    dedupe: MemoryDeduplicator, session: AsyncSession
+) -> DeduplicationState:
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, request=request, json=applyguy_fallback_payload())
+        )
+    )
+    scraper = ApplyGuyScraper("internship", client=client)
+    try:
+        result = await ApplyGuyPipeline(scraper, dedupe, session).run()
+        return result.outcomes[0].state
+    finally:
+        await scraper.aclose()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_direct_and_applyguy_fallback_true_alternation_is_stable() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    dedupe = MemoryDeduplicator()
+
+    async with factory() as session:
+        states = [
+            await run_direct(dedupe, session),
+            await run_applyguy_fallback(dedupe, session),
+            await run_direct(dedupe, session),
+            await run_applyguy_fallback(dedupe, session),
+        ]
+
+        assert states == [
+            DeduplicationState.NEW_ROLE,
+            DeduplicationState.NO_OP,
+            DeduplicationState.NO_OP,
+            DeduplicationState.NO_OP,
+        ]
+        posting = (await session.scalars(select(JobPosting))).one()
+        assert posting.apply_url == "https://job-boards.greenhouse.io/mercury/jobs/6199367004"
+        assert dedupe.values[posting.base_hash] == posting.content_hash
+        assert await session.scalar(select(func.count()).select_from(JobPosting)) == 1
+        assert await session.scalar(select(func.count()).select_from(DiscoveryEvent)) == 1
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_applyguy_fallback_then_direct_improves_once_without_ping_pong() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    dedupe = MemoryDeduplicator()
+
+    async with factory() as session:
+        states = [
+            await run_applyguy_fallback(dedupe, session),
+            await run_direct(dedupe, session),
+            await run_applyguy_fallback(dedupe, session),
+            await run_direct(dedupe, session),
+        ]
+
+        assert states == [
+            DeduplicationState.NEW_ROLE,
+            DeduplicationState.ROLE_UPDATED,
+            DeduplicationState.NO_OP,
+            DeduplicationState.NO_OP,
+        ]
+        posting = (await session.scalars(select(JobPosting))).one()
+        assert posting.apply_url == "https://job-boards.greenhouse.io/mercury/jobs/6199367004"
+        assert dedupe.values[posting.base_hash] == posting.content_hash
+        assert await session.scalar(select(func.count()).select_from(JobPosting)) == 1
+        assert await session.scalar(select(func.count()).select_from(DiscoveryEvent)) == 1
+    await engine.dispose()
 
 
 @pytest.mark.asyncio
