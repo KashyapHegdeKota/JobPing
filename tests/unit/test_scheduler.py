@@ -136,3 +136,32 @@ async def test_scheduler_github_interval_polls_both_dev_repositories(
         cli.JobType.INTERNSHIP,
         cli.JobType.NEW_GRAD,
     ]
+
+
+async def test_scheduler_applyguy_interval_registers_independent_feeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict[str, object]] = []
+
+    async def fake_process(**kwargs: object) -> tuple[object, ...]:
+        calls.append(kwargs)
+        return ()
+
+    monkeypatch.setattr(cli, "_process_applyguy_sync", fake_process)
+    targets = cli._scheduler_targets(
+        ["applyguy.ai=60"],
+        redis_url="redis://localhost:6379/0",
+        github_token=None,
+        database_url="sqlite+aiosqlite:///jobs.db",
+    )
+
+    assert [target.name for target in targets] == [
+        "applyguy.ai/internship",
+        "applyguy.ai/new_grad",
+    ]
+    for target in targets:
+        await target.callback()
+    assert [call["feed_types"] for call in calls] == [
+        (cli.ApplyGuyFeed.INTERNSHIPS,),
+        (cli.ApplyGuyFeed.NEW_GRAD,),
+    ]
