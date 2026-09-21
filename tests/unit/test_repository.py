@@ -85,6 +85,60 @@ async def test_unchanged_job_does_not_advance_updated_at(session: AsyncSession) 
     assert same_job.updated_at == previous_updated_at
 
 
+async def test_upsert_prefers_direct_ats_url_over_applyguy_redirect(
+    session: AsyncSession,
+) -> None:
+    repository = DatabaseRepository(session)
+    first = await repository.save_job_posting(make_job(apply_url="https://applyguy.ai/jobs?id=1"))
+    updated = await repository.save_job_posting(
+        make_job(
+            apply_url="https://jobs.lever.co/acme/abc123?utm_source=Simplify",
+            content_hash="c" * 64,
+        )
+    )
+
+    assert updated.id == first.id
+    assert updated.apply_url == "https://jobs.lever.co/acme/abc123"
+    assert await session.scalar(select(func.count()).select_from(JobPosting)) == 1
+
+
+async def test_upsert_strips_tracking_parameters_without_replacing_direct_url(
+    session: AsyncSession,
+) -> None:
+    repository = DatabaseRepository(session)
+    first = await repository.save_job_posting(
+        make_job(
+            apply_url="https://jobs.lever.co/acme/abc123?utm_source=Simplify",
+        )
+    )
+    original_updated_at = first.updated_at
+    second = await repository.save_job_posting(
+        make_job(apply_url="https://jobs.lever.co/acme/abc123", content_hash=first.content_hash)
+    )
+
+    assert second.apply_url == "https://jobs.lever.co/acme/abc123"
+    assert second.updated_at == original_updated_at
+
+
+async def test_applyguy_fallback_never_replaces_existing_direct_url(
+    session: AsyncSession,
+) -> None:
+    repository = DatabaseRepository(session)
+    first = await repository.save_job_posting(
+        make_job(apply_url="https://jobs.lever.co/acme/abc123")
+    )
+    second = await repository.save_job_posting(
+        make_job(
+            apply_url="https://applyguy.ai/jobs?id=abc123",
+            content_hash="d" * 64,
+        )
+    )
+
+    assert second.id == first.id
+    assert second.apply_url == "https://jobs.lever.co/acme/abc123"
+    assert second.content_hash == first.content_hash
+
+
 async def test_job_lookup_by_base_hash_is_owned_by_repository(session: AsyncSession) -> None:
     repository = DatabaseRepository(session)
     saved = await repository.save_job_posting(make_job())
