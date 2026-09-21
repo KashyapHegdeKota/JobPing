@@ -32,6 +32,11 @@ from app.db.models import (
 )
 from app.events.publisher import EventPublisher, JobEventType
 from app.schemas.job import NormalizedJob
+from app.services.hasher import (
+    canonicalize_apply_url,
+    choose_canonical_apply_url,
+    generate_content_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -165,11 +170,23 @@ class DatabaseRepository:
             existing = await self._session.scalar(
                 select(JobPosting).where(JobPosting.base_hash == normalized_job.base_hash)
             )
+            incoming_url = str(normalized_job.apply_url)
+            apply_url = choose_canonical_apply_url("", incoming_url)
+            content_hash = normalized_job.content_hash
+            if existing is not None:
+                apply_url = choose_canonical_apply_url(existing.apply_url, apply_url)
+            if apply_url != incoming_url or canonicalize_apply_url(incoming_url) != incoming_url:
+                content_hash = generate_content_hash(
+                    normalized_job.base_hash,
+                    apply_url,
+                    normalized_job.location,
+                    normalized_job.is_closed,
+                )
             values = {
                 "company_id": company_id,
                 "title": normalized_job.title,
-                "content_hash": normalized_job.content_hash,
-                "apply_url": str(normalized_job.apply_url),
+                "content_hash": content_hash,
+                "apply_url": apply_url,
                 "location": normalized_job.location,
                 "season": normalized_job.season,
                 "job_type": JobType(normalized_job.job_type),
@@ -668,13 +685,29 @@ class DatabaseRepository:
                 if company_id is None:
                     assert job.company_name is not None
                     company_id = company_ids[job.company_name.strip()]
+                incoming_url = str(job.apply_url)
+                apply_url = choose_canonical_apply_url("", incoming_url)
+                old = previous.get(job.base_hash)
+                if old is not None:
+                    apply_url = choose_canonical_apply_url(str(old["apply_url"]), apply_url)
+                content_hash = job.content_hash
+                if (
+                    apply_url != incoming_url
+                    or canonicalize_apply_url(incoming_url) != incoming_url
+                ):
+                    content_hash = generate_content_hash(
+                        job.base_hash,
+                        apply_url,
+                        job.location,
+                        job.is_closed,
+                    )
                 values.append(
                     {
                         "company_id": company_id,
                         "title": job.title,
                         "base_hash": job.base_hash,
-                        "content_hash": job.content_hash,
-                        "apply_url": str(job.apply_url),
+                        "content_hash": content_hash,
+                        "apply_url": apply_url,
                         "location": job.location,
                         "season": job.season,
                         "job_type": JobType(job.job_type),

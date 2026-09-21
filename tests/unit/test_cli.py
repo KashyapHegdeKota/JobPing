@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from app import cli
 from app.db.models import ApplicationStatus
+from app.pipelines.ats_pipeline import ATSPipelineResult
 from app.pipelines.simplify_pipeline import PipelineResult
 from app.schemas.job import JobType
 from pytest import MonkeyPatch
@@ -168,6 +169,36 @@ def test_run_simplify_parser_validates_season_before_execution() -> None:
 
     assert result.exit_code == 2
     assert "2026" in result.output
+
+
+def test_run_applyguy_sync_selects_one_feed_and_prints_summary(monkeypatch: MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_process(**kwargs: object) -> tuple[ATSPipelineResult, ...]:
+        captured.update(kwargs)
+        return (ATSPipelineResult(),)
+
+    monkeypatch.setattr(cli, "_process_applyguy_sync", fake_process)
+    result = runner.invoke(
+        cli.app,
+        [
+            "run-applyguy-sync",
+            "--type",
+            "new-grad",
+            "--redis-url",
+            "redis://cache:6379/2",
+            "--database-url",
+            "sqlite+aiosqlite:///jobs.db",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert "ApplyGuy sync complete" in result.stdout
+    assert captured == {
+        "feed_types": (cli.ApplyGuyFeed.NEW_GRAD,),
+        "redis_url": "redis://cache:6379/2",
+        "database_url": "sqlite+aiosqlite:///jobs.db",
+    }
 
 
 def test_run_simplify_full_sync_fetches_targets_and_reports_bulk_insert(

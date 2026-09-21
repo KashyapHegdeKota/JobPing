@@ -11,18 +11,22 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 import typer
 import uvicorn
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.applications.models import ApplicationCheckpoint
 from app.applications.service import ApplicationService
 from app.db.models import ApplicationAttempt, ApplicationStatus
 from app.db.repository import DatabaseRepository
+from app.pipelines.applyguy_pipeline import ApplyGuyPipeline
+from app.pipelines.ats_pipeline import ATSPipelineResult
 from app.pipelines.simplify_pipeline import PipelineResult, SimplifyPipeline
 from app.scheduler import PollTarget, SchedulerDaemon, parse_intervals
 from app.schemas.application import ApplicationForm
 from app.schemas.job import JobType
+from app.scrapers.applyguy import ApplyGuyFeed, ApplyGuyScraper
 from app.scrapers.browser import BrowserManager
 from app.scrapers.github_client import GitHubClient
 from app.services.db_audit import AuditReport, DatabaseAuditService
@@ -36,6 +40,7 @@ applications_app = typer.Typer(
 )
 app.add_typer(applications_app, name="applications")
 SIMPLIFY_REPOSITORIES = ("Summer2027-Internships", "New-Grad-Positions")
+APPLYGUY_FEEDS = (ApplyGuyFeed.INTERNSHIPS, ApplyGuyFeed.NEW_GRAD)
 
 
 def _asyncio_run[T](awaitable: Awaitable[T]) -> T:
@@ -129,6 +134,52 @@ async def _persist_results(results: tuple[PipelineResult, ...], database_url: st
             return await SimplifyPipeline.persist_results(repository, results)
     finally:
         await engine.dispose()
+
+
+async def _process_applyguy_sync(
+    *,
+    feed_types: tuple[ApplyGuyFeed, ...],
+    redis_url: str,
+    database_url: str | None,
+) -> tuple[ATSPipelineResult, ...]:
+    """Fetch each requested ApplyGuy feed with shared Redis state and DB session."""
+    async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+        async with JobDeduplicator.from_url(redis_url) as deduplicator:
+            if database_url:
+                engine = create_async_engine(database_url)
+                sessions = async_sessionmaker(engine, expire_on_commit=False)
+                try:
+                    async with sessions() as session:
+                        return await _run_applyguy_feeds(
+                            feed_types, deduplicator, session=session, client=client
+                        )
+                finally:
+                    await engine.dispose()
+            return await _run_applyguy_feeds(feed_types, deduplicator, client=client)
+
+
+async def _run_applyguy_feeds(
+    feed_types: tuple[ApplyGuyFeed, ...],
+    deduplicator: JobDeduplicator,
+    *,
+    client: httpx.AsyncClient,
+    session: AsyncSession | None = None,
+) -> tuple[ATSPipelineResult, ...]:
+    """Run independent feed pipelines while sharing the global identity cache."""
+    results: list[ATSPipelineResult] = []
+    for feed_type in feed_types:
+        scraper = ApplyGuyScraper(feed_type, client=client)
+        try:
+            results.append(
+                await ApplyGuyPipeline(
+                    scraper,
+                    deduplicator,
+                    session,
+                ).run()
+            )
+        finally:
+            await scraper.aclose()
+    return tuple(results)
 
 
 async def _process_full_sync_files(
@@ -749,6 +800,66 @@ def run_simplify_full_sync(
     typer.echo(f"Bulk upsert complete: parsed={parsed} persisted={persisted}")
 
 
+@app.command("run-applyguy-sync")
+def run_applyguy_sync(
+    feed_type: Annotated[
+        str,
+        typer.Option("--type", help="Feed to ingest: internship, new-grad, or all."),
+    ] = "all",
+    redis_url: Annotated[
+        str, typer.Option(envvar="REDIS_URL", help="Redis connection URL.")
+    ] = "redis://localhost:6379/0",
+    database_url: Annotated[
+        str | None, typer.Option(envvar="DATABASE_URL", help="Async SQLAlchemy database URL.")
+    ] = None,
+) -> None:
+    """Fetch and persist one or both ApplyGuy JSON feeds."""
+    try:
+        if feed_type.strip().casefold() == "all":
+            feed_types = APPLYGUY_FEEDS
+        else:
+            feed_types = (ApplyGuyFeed.parse(feed_type),)
+        resolved_database_url = database_url or os.environ.get("DATABASE_URL")
+        if not resolved_database_url:
+            typer.echo("DATABASE_URL is required for ApplyGuy sync.", err=True)
+            raise typer.Exit(code=2)
+        results = _asyncio_run(
+            _process_applyguy_sync(
+                feed_types=feed_types,
+                redis_url=redis_url,
+                database_url=resolved_database_url,
+            )
+        )
+    except typer.Exit:
+        raise
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        typer.echo("ApplyGuy sync cancelled.", err=True)
+        raise typer.Exit(code=130) from None
+    except Exception as exc:
+        typer.echo(f"ApplyGuy sync failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+
+    total = {state: 0 for state in DeduplicationState}
+    rejected = duplicates = failures = 0
+    for result in results:
+        for state in DeduplicationState:
+            total[state] += len(result.categorized(state))
+        rejected += len(result.rejected)
+        duplicates += len(result.duplicates)
+        failures += len(result.failures)
+        typer.echo(
+            f"{result.outcomes[0].source if result.outcomes else 'applyguy'}: "
+            f"fetched={len(result.outcomes) + len(result.rejected) + len(result.duplicates)} "
+            f"accepted={len(result.outcomes)} rejected={len(result.rejected)} "
+            f"duplicates/coalesced={len(result.duplicates)} failures={len(result.failures)}"
+        )
+    typer.echo(
+        "ApplyGuy sync complete: "
+        + " ".join(f"{state.value}={total[state]}" for state in DeduplicationState)
+        + f" rejected={rejected} duplicates/coalesced={duplicates} failures={failures}"
+    )
+
+
 def _scheduler_targets(
     intervals: list[str],
     *,
@@ -781,6 +892,18 @@ def _scheduler_targets(
                     )
 
                 targets.append(PollTarget(f"github.com/{repo}@dev", seconds, poll_simplify))
+            continue
+        if domain in {"applyguy.ai", "raw.githubusercontent.com"}:
+            for feed_type in APPLYGUY_FEEDS:
+
+                async def poll_applyguy(feed: ApplyGuyFeed = feed_type) -> None:
+                    await _process_applyguy_sync(
+                        feed_types=(feed,),
+                        redis_url=redis_url,
+                        database_url=database_url,
+                    )
+
+                targets.append(PollTarget(f"applyguy.ai/{feed_type.value}", seconds, poll_applyguy))
             continue
 
         async def placeholder(target: str = domain) -> None:
@@ -841,6 +964,7 @@ def start_scheduler(
     try:
         interval = interval or [
             "github.com=60",
+            "applyguy.ai=120",
             "boards.greenhouse.io=120",
             "api.lever.co=120",
         ]
@@ -851,6 +975,9 @@ def start_scheduler(
                 if domain == "github.com":
                     for repo in SIMPLIFY_REPOSITORIES:
                         typer.echo(f"  SimplifyJobs/{repo}@dev")
+                elif domain in {"applyguy.ai", "raw.githubusercontent.com"}:
+                    for feed_type in APPLYGUY_FEEDS:
+                        typer.echo(f"  ApplyGuy/{feed_type.repository}/{feed_type.path}")
             return
         _asyncio_run(
             _serve_scheduler(

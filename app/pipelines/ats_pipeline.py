@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from typing import Protocol
 
 from pydantic import ValidationError
@@ -13,6 +14,7 @@ from app.schemas.job import JobType, NormalizedJob, RawJobPayload
 from app.scrapers.base import BaseScraper
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 from app.services.hasher import generate_base_hash, generate_content_hash
+from app.services.posting_dates import parse_source_posted_at
 
 
 class Deduplicator(Protocol):
@@ -79,7 +81,7 @@ class ATSPipeline:
         self,
         scrapers: list[BaseScraper],
         deduplicator: JobDeduplicator | Deduplicator,
-        session: AsyncSession,
+        session: AsyncSession | None,
         *,
         season: int,
         job_type: JobType,
@@ -89,7 +91,7 @@ class ATSPipeline:
         self._scrapers = tuple(scrapers)
         self._deduplicator = deduplicator
         self._session = session
-        self._repository = DatabaseRepository(session)
+        self._repository = DatabaseRepository(session) if session is not None else None
         self._season = season
         self._job_type = job_type
 
@@ -131,7 +133,7 @@ class ATSPipeline:
                 if state is not DeduplicationState.NO_OP:
                     pending.append(job)
                 result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
-        if pending:
+        if pending and self._repository is not None:
             await self._repository.bulk_upsert_job_postings(pending)
         return result
 
@@ -143,6 +145,11 @@ class ATSPipeline:
         closed = self._closed(raw.is_closed)
         base_hash = generate_base_hash(company, title)
         content_hash = generate_content_hash(base_hash, apply_url, location, closed)
+        observed_at = raw.observed_at or datetime.now(UTC)
+        posted_at = parse_source_posted_at(
+            raw.payload.get("posted", raw.payload.get("date_posted")),
+            observed_at=observed_at,
+        )
         return NormalizedJob(
             company_name=company,
             title=title,
@@ -153,6 +160,7 @@ class ATSPipeline:
             season=self._season,
             job_type=self._job_type,
             is_closed=closed,
+            posted_at=posted_at,
         )
 
     @staticmethod

@@ -1,7 +1,12 @@
 """Unit tests for deterministic job identity and content hashing."""
 
 import pytest
-from app.services.hasher import generate_base_hash, generate_content_hash
+from app.services.hasher import (
+    canonicalize_apply_url,
+    choose_canonical_apply_url,
+    generate_base_hash,
+    generate_content_hash,
+)
 
 
 def test_base_hash_has_exact_deterministic_digest() -> None:
@@ -82,3 +87,26 @@ def test_content_hash_length_prefixes_resist_field_boundary_ambiguity() -> None:
 def test_content_hash_rejects_invalid_base_hash(base_hash: str) -> None:
     with pytest.raises(ValueError, match="64-character hexadecimal"):
         generate_content_hash(base_hash, "https://example.com/apply", "Remote", False)
+
+
+def test_url_canonicalization_strips_tracking_and_folds_ats_aliases() -> None:
+    assert (
+        canonicalize_apply_url("https://boards.greenhouse.io/acme/jobs/42?utm_source=simplify")
+        == "https://job-boards.greenhouse.io/acme/jobs/42"
+    )
+    assert canonicalize_apply_url("https://jobs.lever.co/acme/abc?fbclid=1") == (
+        "https://jobs.lever.co/acme/abc"
+    )
+
+
+def test_url_canonicalization_preserves_greenhouse_job_id_query() -> None:
+    assert canonicalize_apply_url("https://boards.greenhouse.io/acme?gh_jid=42") == (
+        "https://job-boards.greenhouse.io/acme?gh_jid=42"
+    )
+
+
+def test_direct_ats_url_wins_over_applyguy_redirect() -> None:
+    direct = "https://job-boards.greenhouse.io/acme/jobs/42"
+    redirect = "https://applyguy.ai/jobs?id=42"
+    assert choose_canonical_apply_url(redirect, direct) == direct
+    assert choose_canonical_apply_url(direct, redirect) == direct

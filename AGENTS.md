@@ -8,7 +8,7 @@ JobPing is a Python 3.12, async-first discovery engine for 2026/2027 internships
 
 `sources -> scraper/parser -> RawJobPayload -> normalization + hashes -> Redis classification -> SQLAlchemy repository -> PostgreSQL`
 
-Current source families are Simplify GitHub README diffs/full sync, Greenhouse and Lever JSON APIs, and Playwright-based Workday/Amazon/Meta portals. FastAPI delivery, Redis Pub/Sub, WebSockets, and SSE are Phase 3 work unless their code is already present when you read this.
+Current source families are Simplify GitHub README diffs/full sync, ApplyGuy GitHub JSON feeds, Greenhouse and Lever JSON APIs, and Playwright-based Workday/Amazon/Meta portals. FastAPI delivery, Redis Pub/Sub, WebSockets, and SSE are Phase 3 work unless their code is already present when you read this.
 
 Key directories:
 
@@ -112,6 +112,7 @@ using injected HTTP transports; no live keys or developer database mutation.
 - `BaseScraper` owns a client only when it creates it, records run timing/count/success, and exposes async cleanup/context-manager behavior. Preserve caller ownership for injected clients.
 - GitHub follows redirects, resolves the default/latest commit safely, handles rate limits, extracts only target README patches, and supports full-file seeding from Simplify's live `dev` branch by default. Patch parsing excludes diff metadata. Markdown parsing tolerates changing columns, continuation company marker `↳`, HTML rows/tags, varied links, multiple locations, lock emoji, strikethrough, and explicit closed status.
 - Greenhouse and Lever consume public JSON endpoints and return `RawJobPayload`; malformed individual rows should be logged/rejected without silently losing the whole response.
+- ApplyGuy consumes `data/internships.json` and `data/new-grad-jobs.json` from the two 2027 repositories and returns `RawJobPayload`; global company/title identity must never create source-specific duplicate postings. Prefer direct ATS URLs (and ApplyGuy `listingUrl`) over aggregator redirects, strip clearly non-semantic tracking parameters, and never infer closure from absence in one source.
 - `BrowserManager` provides Playwright contexts with randomized profiles, stealth application, optional proxy attachment, and configurable resource blocking. Browser hardening does not guarantee bypass of bot controls.
 - `ProxyManager` loads `PROXY_LIST`, rotates healthy endpoints, cools down 403/429/503 failures, and must never expose credentials in logs or errors.
 - Workday paginates rendered pages. Amazon/Meta custom scrapers prefer bounded, deduplicated XHR/fetch JSON captured by `NetworkInterceptor`, with DOM fallback.

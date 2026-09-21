@@ -105,8 +105,9 @@ JobPing is a low-latency job discovery engine for 2026/2027 technology internshi
 new-grad roles. The ingestion foundation includes GitHub commit retrieval, unified-diff and
 Markdown parsing, direct ATS scrapers (Greenhouse, Lever, Workday, Custom Tech), network interception, browser automation, normalization, dual SHA-256 hashing, Redis-backed state classification, and SQLAlchemy persistence with Alembic migrations.
 
-The CLI supports fetching and classifying Simplify commits (with database persistence),
-running a persistent scheduler daemon, and auditing the database for anomalies.
+The CLI supports fetching and classifying Simplify commits and ApplyGuy's machine-readable
+JSON feeds (with database persistence), running a persistent scheduler daemon, and auditing
+the database for anomalies.
 
 ## Prerequisites
 
@@ -164,6 +165,30 @@ deployed environment.
 | `JOB_TYPE` | `internship` | CLI | Assigned category; accepted values are `internship` and `new_grad`. |
 
 Command-line options override their corresponding CLI environment variables.
+
+ApplyGuy ingestion
+
+ApplyGuy's 2027 repositories are supported through their machine-readable JSON files:
+
+* `ApplyGuy/2027-Internships/data/internships.json`
+* `ApplyGuy/2027-New-Grad-Jobs/data/new-grad-jobs.json`
+
+Run one feed or both feeds manually (the command requires `DATABASE_URL`):
+
+```shell
+poetry run python -m app.cli run-applyguy-sync --type all
+poetry run python -m app.cli run-applyguy-sync --type internship
+poetry run python -m app.cli run-applyguy-sync --type new-grad
+```
+
+ApplyGuy's `listingUrl` is preferred over its `url` redirect. Job identity remains global:
+company/title hashing and the unique `base_hash` prevent a role already discovered through
+Simplify, Greenhouse, Lever, Workday, or another source from becoming a second posting.
+Tracking parameters are removed from application URLs, and direct ATS/employer URLs are
+retained over aggregator redirects. The scheduler polls the internship and new-grad feeds
+independently under the `applyguy.ai` interval, so one feed failure does not stop the other.
+Temporary disappearance from ApplyGuy is not treated as closure; only explicit closed state
+from a source can close a posting.
 
 ## Start PostgreSQL and Redis
 
