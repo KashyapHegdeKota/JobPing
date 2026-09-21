@@ -1,6 +1,15 @@
 # JobPing Agent Guide
 
-> **Mandatory first step:** Every agent must read this entire `AGENTS.md` before writing code, changing dependencies, creating migrations, or making commits. Re-read it after context compaction. Inspect the current implementation and tests before assuming a contract; update this file when architecture materially changes.
+> **Mandatory startup sequence for every implementation agent:** Before making changes, every agent must:
+>
+> 1. Read `AGENTS.md` completely.
+> 2. Read `BACKLOG.md` completely.
+> 3. Inspect the current implementation and relevant tests.
+> 4. Reconcile the assignment with the backlog and determine whether it matches an existing item.
+> 5. Update `BACKLOG.md` as work status, blockers, discoveries, or follow-up work change.
+> 6. Before handoff, update `BACKLOG.md` to accurately reflect what was completed and what remains.
+>
+> This is a mandatory repository workflow contract for every agent and every implementation task, not an optional suggestion. Re-read both files after context compaction. Update this file when architecture materially changes.
 
 ## Purpose and architecture
 
