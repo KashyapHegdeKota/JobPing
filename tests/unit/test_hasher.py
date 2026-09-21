@@ -110,3 +110,26 @@ def test_direct_ats_url_wins_over_applyguy_redirect() -> None:
     redirect = "https://applyguy.ai/jobs?id=42"
     assert choose_canonical_apply_url(redirect, direct) == direct
     assert choose_canonical_apply_url(direct, redirect) == direct
+
+
+def test_equal_ranked_direct_urls_preserve_the_existing_winner() -> None:
+    current = "https://job-boards.greenhouse.io/acme/jobs/42"
+    incoming = "https://jobs.lever.co/acme/different-direct-link"
+
+    assert choose_canonical_apply_url(current, incoming) == current
+
+
+def test_lever_tracking_variant_has_the_same_content_state() -> None:
+    base_hash = generate_base_hash("Acme", "Software Engineer")
+
+    assert generate_content_hash(
+        base_hash,
+        "https://jobs.lever.co/acme/abc?utm_source=applyguy",
+        "Remote",
+        False,
+    ) == generate_content_hash(
+        base_hash,
+        "https://jobs.lever.co/acme/abc",
+        "Remote",
+        False,
+    )

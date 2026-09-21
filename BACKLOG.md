@@ -10,36 +10,43 @@ No backlog items are currently in progress.
 
 ## Ready
 
-### INGEST-APPLYGUY-001 Add ApplyGuy 2027 feeds
-
-- Owner: unassigned
-- Status: ready
-- Priority: high
-- Area: ingestion
-- Context: The current branch does not contain an ApplyGuy source implementation. Add ApplyGuy's 2027 internship and new-grad JSON repositories as first-class discovery sources while preserving one logical posting across ApplyGuy, Simplify, and direct ATS sources.
-- Acceptance criteria:
-  - ingest `data/internships.json`
-  - ingest `data/new-grad-jobs.json`
-  - prefer `listingUrl`
-  - prevent cross-source duplicate tracker entries
-  - prevent URL source ping-pong
-  - integrate CLI and scheduler
-  - preserve conservative closure semantics
-  - add cross-source regression tests
-  - update `README.md` and `AGENTS.md`
-  - Ruff, Black, and pytest pass
-- Notes:
-  - Related ApplyGuy commits exist on separate branches, but this item remains unresolved until the implementation is merged and verified against these criteria.
-
 ## Blocked
 
 No blocked backlog items.
 
 ## Deferred / Technical Debt
 
-No deferred items recorded.
+### INGEST-IDENTITY-002 Cross-source location reconciliation
+
+- Owner: unassigned
+- Status: deferred
+- Priority: medium
+- Area: ingestion
+- Context: Content hashing safely normalizes Unicode, case, and whitespace, but materially different source descriptions such as `Remote` and `Remote, U.S.` remain distinct and may produce legitimate `ROLE_UPDATED` classifications.
+- Acceptance criteria:
+  - define a provenance-aware, deterministic location authority policy without fuzzy matching
+  - preserve genuinely different locations such as `Austin, TX` and `Seattle, WA`
+  - add cross-source regression coverage before changing identity semantics
 
 ## Recently Completed
+
+### INGEST-APPLYGUY-001 Harden ApplyGuy cross-source reconciliation
+
+- Owner: ingestion
+- Status: completed
+- Priority: high
+- Area: ingestion
+- Context: Hardened the merged ApplyGuy integration so Redis classification and PostgreSQL persistence use the same effective canonical URL state.
+- Acceptance criteria:
+  - true direct/fallback alternation remains `NEW_ROLE`, then three `NO_OP` results
+  - reverse-order fallback/direct alternation improves once with `ROLE_UPDATED`, then remains stable
+  - existing postings are batch-loaded once per pipeline run instead of once per row
+  - safe location formatting variants do not churn; material differences remain updates
+  - one logical posting produces one initial discovery event
+  - conservative ApplyGuy closure semantics remain unchanged
+  - Ruff and Black pass; full pytest passes (`423 passed, 4 skipped`)
+- Notes:
+  - Broader semantic location reconciliation is tracked separately as `INGEST-IDENTITY-002`.
 
 ### DOCS-BACKLOG-001 Establish repository backlog workflow
 

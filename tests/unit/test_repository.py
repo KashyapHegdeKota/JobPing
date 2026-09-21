@@ -151,6 +151,30 @@ async def test_job_lookup_by_base_hash_is_owned_by_repository(session: AsyncSess
         await repository.get_job_posting_by_base_hash("  ")
 
 
+async def test_batch_job_lookup_returns_deterministic_identity_mapping(
+    session: AsyncSession,
+) -> None:
+    repository = DatabaseRepository(session)
+    first = await repository.save_job_posting(make_job())
+    second = await repository.save_job_posting(
+        make_job(
+            base_hash="c" * 64,
+            content_hash="d" * 64,
+            title="Data Science Intern",
+            apply_url="https://example.com/jobs/2",
+        )
+    )
+
+    found = await repository.get_job_postings_by_base_hashes(
+        ["  " + ("C" * 64) + "  ", "a" * 64, "c" * 64, "f" * 64]
+    )
+
+    assert found == {"a" * 64: first, "c" * 64: second}
+    assert await repository.get_job_postings_by_base_hashes([]) == {}
+    with pytest.raises(ValueError, match="must not be empty"):
+        await repository.get_job_postings_by_base_hashes(["a" * 64, "  "])
+
+
 async def test_get_job_by_id_eager_loads_company(session: AsyncSession) -> None:
     repository = DatabaseRepository(session)
     saved = await repository.save_job_posting(make_job())

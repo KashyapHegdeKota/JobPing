@@ -247,6 +247,26 @@ class DatabaseRepository:
             select(JobPosting).where(JobPosting.base_hash == normalized_hash)
         )
 
+    async def get_job_postings_by_base_hashes(
+        self, base_hashes: Sequence[str]
+    ) -> dict[str, JobPosting]:
+        """Return existing postings for a batch of identities in one query."""
+        normalized_hashes = tuple(
+            dict.fromkeys(base_hash.strip().lower() for base_hash in base_hashes)
+        )
+        if any(not base_hash for base_hash in normalized_hashes):
+            raise ValueError("base hashes must not be empty")
+        if not normalized_hashes:
+            return {}
+        postings = (
+            await self._session.scalars(
+                select(JobPosting)
+                .where(JobPosting.base_hash.in_(normalized_hashes))
+                .order_by(JobPosting.base_hash)
+            )
+        ).all()
+        return {posting.base_hash: posting for posting in postings}
+
     async def get_job_by_id(self, job_id: int) -> JobPosting | None:
         """Return a posting and its company for application inspection."""
         if job_id <= 0:
