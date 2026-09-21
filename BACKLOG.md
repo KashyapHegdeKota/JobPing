@@ -6,18 +6,7 @@
 
 ## In Progress
 
-### DOCS-BACKLOG-001 Establish repository backlog workflow
-
-- Owner: docs/backlog
-- Status: in_progress
-- Priority: high
-- Area: infrastructure / documentation
-- Context: Establish a durable root backlog, mandatory agent startup integration, and lightweight consistency validation.
-- Acceptance criteria:
-  - create the canonical root `BACKLOG.md`
-  - require every implementation agent to read and maintain it through `AGENTS.md`
-  - preserve the unresolved ApplyGuy work as an actionable backlog item
-  - add deterministic validation that the two workflow files remain connected
+No backlog items are currently in progress.
 
 ## Ready
 
@@ -52,4 +41,17 @@ No deferred items recorded.
 
 ## Recently Completed
 
-No completed backlog items recorded yet.
+### DOCS-BACKLOG-001 Establish repository backlog workflow
+
+- Owner: docs/backlog
+- Status: completed
+- Priority: high
+- Area: infrastructure / documentation
+- Context: Established a durable root backlog, mandatory agent startup integration, and a lightweight consistency test.
+- Acceptance criteria:
+  - create the canonical root `BACKLOG.md`
+  - require every implementation agent to read and maintain it through `AGENTS.md`
+  - preserve the unresolved ApplyGuy work as an actionable backlog item
+  - add deterministic validation that the two workflow files remain connected
+- Notes:
+  - ApplyGuy is intentionally not marked complete by this documentation task.
