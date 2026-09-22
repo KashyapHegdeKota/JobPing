@@ -103,6 +103,13 @@ aggregator URL churn do not establish a repost. Backfilled historical closed pos
 have no fabricated source identity: a later URL difference alone cannot label them as
 reposted.
 
+An ambiguous weak open observation cannot clear a confirmed closure. The posting and its
+latest occurrence stay closed until a comparable ATS identity proves a same-occurrence
+reactivation or stronger evidence proves a new repost. The observation's raw URL and
+posted date remain attached as provenance, while Redis is refreshed with the effective
+closed SQL state. Later authoritative ATS evidence is therefore evaluated against the
+durable closed occurrence.
+
 Individual repost alerts say “Reposted” in the subject, HTML and text. Daily recaps keep
 new and reposted roles in separate counted sections. Each delivery freezes occurrence
 IDs and the occurrence URL/date snapshot, and the recap API returns those same occurrence

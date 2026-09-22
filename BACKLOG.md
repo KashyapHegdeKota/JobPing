@@ -36,20 +36,22 @@ No blocked backlog items.
 - Status: completed
 - Priority: high
 - Area: ingestion / persistence / notifications
-- Context: Added persisted discovery/repost occurrences, conservative ATS identity evidence, and occurrence-aware notifications while keeping each role's logical posting identity stable.
+- Context: Added persisted discovery/repost occurrences and occurrence-aware notifications, then corrected review findings around weak-source ordering and Workday URL identity.
 - Acceptance criteria:
   - persist immutable discovered/reposted occurrences and ATS source identity evidence for each logical job
-  - classify a new stable ATS identity after a confirmed closure as one repost; same-ID reopening and source/aggregator churn are not reposts
-  - reconcile multiple sources observing the same open occurrence to one occurrence and event
-  - match and deduplicate notifications per occurrence, with occurrence-aware frozen delivery payloads and idempotency
-  - label repost alerts in subject, HTML, and text; render separate, counted new/reposted recap sections
-  - backfill historical occurrences without generating new historical notification events
-  - preserve bootstrap suppression, recipient checks, quotas, catch-up recaps, leases, and existing application history
-  - update lifecycle/notification docs and add regression coverage
-  - run migration validation, Ruff, Black, and pytest
+  - classify a new stable ATS identity after confirmed closure as one repost; same-ID reopening and source/aggregator churn are not reposts
+  - preserve confirmed closure through ambiguous weak open observations and retain their raw provenance
+  - centralize lifecycle decisions and let locked SQL state govern repository writes and final Redis refresh
+  - extract only confident Workday requisition URL tokens; title-only slugs are not stable IDs
+  - reconcile multiple sources observing one open occurrence; notify at most once per subscriber and occurrence
+  - preserve occurrence-aware alerts/recaps, silent historical backfill, notification suppression, and application history
+  - update lifecycle docs and validate migrations, Ruff, Black, and pytest
 - Notes:
-  - Validated silent backfill of historical occurrences/events/deliveries and SQLite migration upgrade/downgrade roundtrip.
-  - Full suite passed: `439 passed, 4 skipped`; Ruff and Black checks passed.
+  - Weak-open → authoritative-new-ATS-ID regressions cover both repository write paths, preserve posting/occurrence closure and raw provenance, and create exactly one repost occurrence/event.
+  - Subscriber matching is run twice in the regression; one repost match and one alert are created for the occurrence.
+  - Workday URL identity tests cover R/JR suffixes, bare requisition tokens, title-only slugs, and malformed paths.
+  - No schema change was needed; notification migration roundtrip and silent backfill tests passed.
+  - Full suite passed: `449 passed, 4 skipped`; Ruff and Black checks passed.
 
 ### INGEST-APPLYGUY-001 Harden ApplyGuy cross-source reconciliation
 
