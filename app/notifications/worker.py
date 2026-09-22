@@ -18,6 +18,7 @@ from app.db.models import (
     EmailAccount,
     EmailDelivery,
     JobMatch,
+    JobOccurrence,
     JobPosting,
     Subscriber,
 )
@@ -29,13 +30,22 @@ from app.scheduler import PollTarget, SchedulerDaemon
 logger = logging.getLogger(__name__)
 
 
-def delivery(user: Subscriber, kind: str, key: str, ids: list[int], now: datetime) -> EmailDelivery:
+def delivery(
+    user: Subscriber,
+    kind: str,
+    key: str,
+    ids: list[int],
+    now: datetime,
+    *,
+    occurrence_ids: list[int] | None = None,
+) -> EmailDelivery:
     return EmailDelivery(
         id=uuid.uuid4().hex,
         subscriber_id=user.id,
         kind=kind,
         dedupe_key=key,
         job_ids=ids,
+        occurrence_ids=occurrence_ids or [],
         created_at=now,
         due_at=now,
         status="pending",
@@ -51,13 +61,14 @@ async def match_events(session: AsyncSession, now: datetime) -> None:
         )
     )
     events = await session.execute(
-        select(DiscoveryEvent, JobPosting)
-        .join(JobPosting)
+        select(DiscoveryEvent, JobOccurrence, JobPosting)
+        .join(JobOccurrence, DiscoveryEvent.occurrence_id == JobOccurrence.id)
+        .join(JobPosting, DiscoveryEvent.job_id == JobPosting.id)
         .where(DiscoveryEvent.processed.is_(False))
         .order_by(DiscoveryEvent.discovered_at)
         .limit(500)
     )
-    for event, job in events:
+    for event, occurrence, job in events:
         for user in users:
             if (
                 not (user.alerts or user.recap)
@@ -69,16 +80,32 @@ async def match_events(session: AsyncSession, now: datetime) -> None:
                 continue
             exists = await session.scalar(
                 select(JobMatch.id).where(
-                    JobMatch.subscriber_id == user.id, JobMatch.job_id == job.id
+                    JobMatch.subscriber_id == user.id,
+                    JobMatch.occurrence_id == occurrence.id,
                 )
             )
             if exists is not None:
                 continue
             session.add(
-                JobMatch(subscriber_id=user.id, job_id=job.id, discovered_at=event.discovered_at)
+                JobMatch(
+                    subscriber_id=user.id,
+                    occurrence_id=occurrence.id,
+                    job_id=job.id,
+                    event_type=event.event_type,
+                    discovered_at=event.discovered_at,
+                )
             )
-            if user.alerts and not job.is_closed:
-                session.add(delivery(user, "alert", f"alert:{user.id}:{job.id}", [job.id], now))
+            if user.alerts and occurrence.closed_at is None:
+                session.add(
+                    delivery(
+                        user,
+                        "alert",
+                        f"alert:{user.id}:{occurrence.id}",
+                        [job.id],
+                        now,
+                        occurrence_ids=[occurrence.id],
+                    )
+                )
         event.processed = True
     await session.flush()
 
@@ -87,7 +114,7 @@ async def make_recaps(session: AsyncSession, now: datetime) -> None:
     # Drain discovery backlog first; never advance a window past unprocessed events.
     if (
         await session.scalar(
-            select(DiscoveryEvent.job_id).where(DiscoveryEvent.processed.is_(False)).limit(1)
+            select(DiscoveryEvent.id).where(DiscoveryEvent.processed.is_(False)).limit(1)
         )
         is not None
     ):
@@ -105,18 +132,23 @@ async def make_recaps(session: AsyncSession, now: datetime) -> None:
         end = utc(user.next_recap)
         while next_cutoff(end, user.timezone) <= now:
             end = next_cutoff(end, user.timezone)
-        ids = list(
-            await session.scalars(
-                select(JobMatch.job_id)
-                .where(
-                    JobMatch.subscriber_id == user.id,
-                    JobMatch.discovered_at >= start,
-                    JobMatch.discovered_at < end,
+        matches = list(
+            (
+                await session.execute(
+                    select(JobMatch.job_id, JobMatch.occurrence_id, JobMatch.event_type)
+                    .where(
+                        JobMatch.subscriber_id == user.id,
+                        JobMatch.discovered_at >= start,
+                        JobMatch.discovered_at < end,
+                    )
+                    .order_by(JobMatch.discovered_at, JobMatch.id)
                 )
-                .order_by(JobMatch.discovered_at, JobMatch.id)
-            )
+            ).all()
         )
-        if ids:
+        if matches:
+            ids = [int(row.job_id) for row in matches]
+            occurrence_ids = [int(row.occurrence_id) for row in matches]
+            reposted_count = sum(row.event_type == "reposted" for row in matches)
             item = await session.scalar(
                 select(EmailDelivery)
                 .where(
@@ -129,17 +161,42 @@ async def make_recaps(session: AsyncSession, now: datetime) -> None:
                 .limit(1)
             )
             if item is None:
-                item = delivery(user, "recap", f"recap:{user.id}:{end.isoformat()}", ids, now)
+                item = delivery(
+                    user,
+                    "recap",
+                    f"recap:{user.id}:{end.isoformat()}",
+                    ids,
+                    now,
+                    occurrence_ids=occurrence_ids,
+                )
                 item.window_start = start
+                item.total_matches = len(occurrence_ids)
+                item.new_count = len(occurrence_ids) - reposted_count
+                item.reposted_count = reposted_count
                 session.add(item)
             else:
                 # Quota-paused, never-attempted recaps become a single catch-up email.
-                item.job_ids = list(dict.fromkeys([*item.job_ids, *ids]))
+                item.occurrence_ids = list(dict.fromkeys([*item.occurrence_ids, *occurrence_ids]))
+                rows = await session.execute(
+                    select(JobOccurrence.id, JobOccurrence.job_id).where(
+                        JobOccurrence.id.in_(item.occurrence_ids)
+                    )
+                )
+                job_by_occurrence = {int(row.id): int(row.job_id) for row in rows}
+                item.job_ids = [
+                    job_by_occurrence[occurrence_id] for occurrence_id in item.occurrence_ids
+                ]
+                kinds = await session.scalars(
+                    select(JobOccurrence.kind).where(JobOccurrence.id.in_(item.occurrence_ids))
+                )
+                item.total_matches = len(item.occurrence_ids)
+                item.reposted_count = sum(kind == "reposted" for kind in kinds)
+                item.new_count = item.total_matches - item.reposted_count
                 item.payload = None
                 item.due_at = now
             item.window_end = end
         user.window_start, user.next_recap = end, next_cutoff(end, user.timezone)
-        if ids:
+        if matches:
             # Only unsent alerts are folded into the recap. Uncertain requests retain their key.
             stale = await session.scalars(
                 select(EmailDelivery).where(
@@ -150,7 +207,7 @@ async def make_recaps(session: AsyncSession, now: datetime) -> None:
                 )
             )
             for alert in stale:
-                if alert.job_ids[0] in ids:
+                if set(alert.occurrence_ids).intersection(occurrence_ids):
                     alert.status = "recap_only"
 
 
@@ -264,8 +321,11 @@ class NotificationWorker:
                     item.status, item.error_code = "reconcile", "idempotency_window_expired"
                     continue
                 if item.kind == "alert" and not item.first_attempt:
-                    job = await session.get(JobPosting, item.job_ids[0])
-                    if job is None or job.is_closed:
+                    if not item.occurrence_ids:
+                        item.status = "cancelled"
+                        continue
+                    occurrence = await session.get(JobOccurrence, item.occurrence_ids[0])
+                    if occurrence is None or occurrence.closed_at is not None:
                         item.status = "cancelled"
                         continue
                     if now - utc(item.created_at) >= timedelta(hours=24):

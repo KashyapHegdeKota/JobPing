@@ -148,6 +148,9 @@ class JobPosting(Base):
     application_attempt: Mapped[ApplicationAttempt | None] = relationship(
         back_populates="job", cascade="all, delete-orphan", passive_deletes=True, uselist=False
     )
+    occurrences: Mapped[list[JobOccurrence]] = relationship(
+        back_populates="job", cascade="all, delete-orphan", passive_deletes=True
+    )
 
 
 class StatusLog(Base):
@@ -167,6 +170,71 @@ class StatusLog(Base):
     )
 
     job: Mapped[JobPosting] = relationship(back_populates="status_logs")
+
+
+class JobOccurrence(Base):
+    """Immutable snapshot of one employer discovery or confirmed repost."""
+
+    __tablename__ = "job_occurrences"
+    __table_args__ = (
+        CheckConstraint("kind IN ('discovered', 'reposted')", name="ck_job_occurrences_kind"),
+        Index("ix_job_occurrences_job_observed", "job_id", "observed_at"),
+        Index("ix_job_occurrences_identity", "identity_namespace", "external_job_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("job_postings.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    apply_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    identity_namespace: Mapped[str | None] = mapped_column(String(255))
+    external_job_id: Mapped[str | None] = mapped_column(String(255))
+    source: Mapped[str | None] = mapped_column(String(100))
+    source_id: Mapped[str | None] = mapped_column(String(500))
+    previous_occurrence_id: Mapped[int | None] = mapped_column(
+        ForeignKey("job_occurrences.id", ondelete="SET NULL")
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    job: Mapped[JobPosting] = relationship(back_populates="occurrences")
+    previous_occurrence: Mapped[JobOccurrence | None] = relationship(
+        remote_side="JobOccurrence.id", foreign_keys=[previous_occurrence_id]
+    )
+    source_observations: Mapped[list[JobSourceObservation]] = relationship(
+        back_populates="occurrence", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class JobSourceObservation(Base):
+    """Source provenance attached to the occurrence it actually observed."""
+
+    __tablename__ = "job_source_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "job_id", "occurrence_id", "source", "source_id", name="uq_job_source_observation"
+        ),
+        Index("ix_job_source_observations_identity", "identity_namespace", "external_job_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(
+        ForeignKey("job_postings.id", ondelete="CASCADE"), nullable=False
+    )
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("job_occurrences.id", ondelete="CASCADE"), nullable=False
+    )
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_id: Mapped[str] = mapped_column(String(500), nullable=False)
+    identity_namespace: Mapped[str | None] = mapped_column(String(255))
+    external_job_id: Mapped[str | None] = mapped_column(String(255))
+    apply_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    occurrence: Mapped[JobOccurrence] = relationship(back_populates="source_observations")
 
 
 class ApplicationAttempt(Base):
@@ -287,9 +355,14 @@ class Subscriber(Base):
 
 class DiscoveryEvent(Base):
     __tablename__ = "notification_events"
-    job_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"), primary_key=True)
+    id: Mapped[int] = mapped_column(primary_key=True)
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("job_occurrences.id", ondelete="CASCADE"), unique=True, nullable=False
+    )
+    job_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"), nullable=False, index=True)
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
     discovered_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )
     processed: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
@@ -300,9 +373,13 @@ class JobMatch(Base):
     subscriber_id: Mapped[str] = mapped_column(
         ForeignKey("notification_subscribers.id"), index=True
     )
-    job_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"))
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("job_occurrences.id", ondelete="CASCADE"), nullable=False
+    )
+    job_id: Mapped[int] = mapped_column(ForeignKey("job_postings.id"), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(16), nullable=False)
     discovered_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    __table_args__ = (UniqueConstraint("subscriber_id", "job_id"),)
+    __table_args__ = (UniqueConstraint("subscriber_id", "occurrence_id"),)
 
 
 class EmailDelivery(Base):
@@ -314,6 +391,10 @@ class EmailDelivery(Base):
     kind: Mapped[str] = mapped_column(String(16))
     dedupe_key: Mapped[str] = mapped_column(String(255), unique=True)
     job_ids: Mapped[list[int]] = mapped_column(JSON)
+    occurrence_ids: Mapped[list[int]] = mapped_column(JSON, default=list)
+    total_matches: Mapped[int] = mapped_column(default=0, server_default="0")
+    new_count: Mapped[int] = mapped_column(default=0, server_default="0")
+    reposted_count: Mapped[int] = mapped_column(default=0, server_default="0")
     window_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     window_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

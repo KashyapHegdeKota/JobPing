@@ -34,6 +34,8 @@ class DatabaseModelsTestCase(unittest.TestCase):
             {
                 "companies",
                 "job_postings",
+                "job_occurrences",
+                "job_source_observations",
                 "status_logs",
                 "application_attempts",
                 "application_answers",

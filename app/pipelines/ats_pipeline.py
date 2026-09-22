@@ -20,6 +20,8 @@ from app.services.hasher import (
     generate_content_hash,
 )
 from app.services.posting_dates import parse_source_posted_at
+from app.services.repost_classifier import is_repost_candidate
+from app.services.source_identity import stable_posting_identity
 
 
 class Deduplicator(Protocol):
@@ -152,19 +154,53 @@ class ATSPipeline:
             if self._repository is not None
             else {}
         )
+        occurrence_evidence = (
+            await self._repository.get_current_occurrence_evidence(
+                [job.base_hash for _, job in candidates]
+            )
+            if self._repository is not None
+            else {}
+        )
         pending: list[NormalizedJob] = []
         for raw, candidate in candidates:
             existing = existing_by_hash.get(candidate.base_hash)
-            job = self._reconcile_persisted_url(
-                candidate, existing.apply_url if existing is not None else None
+            evidence = occurrence_evidence.get(candidate.base_hash)
+            reposted = (
+                existing is not None
+                and evidence is not None
+                and is_repost_candidate(
+                    candidate, source=raw.source, existing=existing, evidence=evidence
+                )
             )
+            job = self._reconcile_persisted_url(
+                candidate,
+                None if reposted or existing is None else existing.apply_url,
+            )
+            if reposted:
+                job = job.model_copy(update={"occurrence_kind": "reposted"})
             state = await self._deduplicator.classify_and_update(
                 base_hash=job.base_hash,
                 content_hash=job.content_hash,
                 is_closed=job.is_closed,
             )
-            if state is not DeduplicationState.NO_OP:
-                pending.append(job)
+            if reposted:
+                state = DeduplicationState.ROLE_REPOSTED
+            elif self._repository is not None:
+                # Redis is a cache. PostgreSQL remains authoritative when it has a
+                # logical job, and a warm Redis key must not suppress database repair.
+                if existing is None:
+                    state = DeduplicationState.NEW_ROLE
+                elif existing.is_closed and not job.is_closed:
+                    state = DeduplicationState.ROLE_UPDATED
+                elif not existing.is_closed and job.is_closed:
+                    state = DeduplicationState.ROLE_CLOSED
+                elif existing.content_hash == job.content_hash:
+                    state = DeduplicationState.NO_OP
+                elif state in {DeduplicationState.NO_OP, DeduplicationState.NEW_ROLE}:
+                    state = DeduplicationState.ROLE_UPDATED
+            # Persist every coalesced observation in one batch. NO_OP rows repair
+            # provenance and let PostgreSQL repair a warm-cache/database mismatch.
+            pending.append(job)
             result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
         if pending and self._repository is not None:
             await self._repository.bulk_upsert_job_postings(pending)
@@ -182,6 +218,12 @@ class ATSPipeline:
             raw.payload.get("posted", raw.payload.get("date_posted")),
             observed_at=observed_at,
         )
+        identity = stable_posting_identity(
+            source=raw.source,
+            source_id=raw.source_id,
+            apply_url=apply_url,
+            payload=raw.payload,
+        )
         return NormalizedJob(
             company_name=company,
             title=title,
@@ -193,6 +235,11 @@ class ATSPipeline:
             job_type=self._job_type,
             is_closed=closed,
             posted_at=posted_at,
+            observed_at=observed_at,
+            source=raw.source,
+            source_id=raw.source_id,
+            identity_namespace=identity[0] if identity else None,
+            external_job_id=identity[1] if identity else None,
         )
 
     @staticmethod

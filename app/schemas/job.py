@@ -50,6 +50,12 @@ class NormalizedJob(BaseModel):
     job_type: JobType
     is_closed: bool = False
     posted_at: datetime | None = None
+    observed_at: datetime | None = None
+    source: str | None = Field(default=None, max_length=100)
+    source_id: str | None = Field(default=None, max_length=500)
+    identity_namespace: str | None = Field(default=None, max_length=255)
+    external_job_id: str | None = Field(default=None, max_length=255)
+    occurrence_kind: str | None = Field(default=None, pattern=r"^(discovered|reposted)$")
     created_at: datetime | None = None
     updated_at: datetime | None = None
 
@@ -63,7 +69,7 @@ class NormalizedJob(BaseModel):
             return aliases.get(normalized, normalized)
         return value
 
-    @field_validator("posted_at", "created_at", "updated_at")
+    @field_validator("posted_at", "observed_at", "created_at", "updated_at")
     @classmethod
     def require_timezone(cls, value: datetime | None) -> datetime | None:
         """Reject ambiguous timestamps at the persistence boundary."""

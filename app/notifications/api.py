@@ -19,7 +19,7 @@ from svix.webhooks import Webhook, WebhookVerificationError
 from app.api.deps import get_db
 from app.db.models import DiscoveryEvent, EmailAccount, EmailDelivery, EmailWebhookEvent, Subscriber
 from app.notifications.core import lock, next_cutoff
-from app.notifications.render import job_rows
+from app.notifications.render import job_rows, occurrence_rows
 from app.notifications.security import Identity, decrypt, encrypt, identity
 from app.notifications.worker import delivery, match_events
 
@@ -278,7 +278,14 @@ async def get_recap(recap_id: str, session: DB, who: Who) -> dict:
         "id": item.id,
         "window_start": item.window_start,
         "window_end": item.window_end,
-        "jobs": await job_rows(session, item.job_ids),
+        "total_matches": item.total_matches,
+        "new_count": item.new_count,
+        "reposted_count": item.reposted_count,
+        "jobs": (
+            await occurrence_rows(session, item.occurrence_ids)
+            if item.occurrence_ids
+            else await job_rows(session, item.job_ids)
+        ),
     }
 
 

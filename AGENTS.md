@@ -43,6 +43,8 @@ PostgreSQL schema (migration `0001_initial_schema.py`):
 - `companies`: integer PK; unique, required `name`; unique nullable `domain`; timezone-aware `created_at`.
 - `job_postings`: integer PK; `company_id` FK with `ON DELETE CASCADE`; title, apply URL, location, season, job type, closed flag, timestamps; unique `base_hash`; indexed `content_hash`; discovery index on `(season, job_type, is_closed)`; season DB constraint 2020-2100 (the application is intentionally stricter).
 - `status_logs`: integer PK; `job_id` FK with `ON DELETE CASCADE`; nullable previous state, required new state, changed timestamp; index on `(job_id, changed_at)`.
+- `job_occurrences`: integer PK; logical `job_id`; `discovered` or `reposted` kind; immutable observed/posted dates, apply URL and source identity snapshot; optional link to the prior occurrence and mutable confirmed `closed_at` lifecycle marker.
+- `job_source_observations`: occurrence-scoped provenance from each source, including source-local ID, provider/tenant-scoped ATS identity, observed URL and dates. Source-local IDs such as Simplify commit/path are provenance only, not requisition identity.
 
 ORM enums store lowercase values. `DatabaseRepository` joins an existing session transaction or opens one when idle; it flushes but does not commit a caller-owned transaction. Company upsert keys on name, job upsert keys on `base_hash`, and status logs must represent a real transition.
 
@@ -57,18 +59,24 @@ Never reproduce hash logic ad hoc; call `app.services.hasher`.
 
 Redis classification and PostgreSQL writes are separate systems, not one distributed transaction. The ATS pipeline classifies before SQL persistence; a SQL failure can leave Redis ahead until reconciliation or TTL expiry. Do not publish externally visible events before the SQL transaction is safely persisted. Full Simplify sync may persist `NO_OP` rows to repair an empty database behind a warm cache.
 
+The logical posting remains keyed by the existing company/title base hash. A `JobOccurrence` represents one discovery or confirmed repost, with its own ATS evidence and apply URL. Only explicit closure marks an occurrence closed; missing rows from a source never imply closure. A repost requires the previous occurrence to be confirmed closed and the candidate to be open, plus either a changed ATS requisition ID in the same provider/tenant namespace or a direct ATS source with a newer trustworthy posted date and materially changed canonical URL. ApplyGuy IDs and Simplify commit/path provenance are weak; direct ATS URL identity may still establish the requisition. Same-ID reopenings and aggregator URL churn do not create occurrences. Keep this evidence policy centralized in `app.services.repost_classifier` and `app.services.source_identity`.
+
 ## Email notifications
 
 `app/notifications/` owns opt-in Resend delivery and Firebase-verified preferences.
 Migration `0004_notifications` adds subscribers, discovery events, matches, delivery
-records, account pauses and webhook deduplication. Both repository save paths record
-new open-job events inside the SQL transaction, independently of Redis. Bootstrap
-callers must use `suppress_notifications=True` or `NOTIFICATIONS_SUPPRESS_DISCOVERY=true`.
+records, account pauses and webhook deduplication. Migration `0006_reposted_job_lifecycle`
+adds occurrences and source observations, then backfills one silent historical occurrence
+per existing logical job without creating notification events. Discovery events, subscriber
+matches and frozen delivery payloads are keyed by occurrence so a repost can be alerted
+again without changing application history. Both repository save paths record new and
+reposted events inside the SQL transaction, independently of Redis. Bootstrap callers must
+use `suppress_notifications=True` or `NOTIFICATIONS_SUPPRESS_DISCOVERY=true`.
 Never send from ingestion or use Redis Pub/Sub as the durable email queue.
 
-The separate `notifications-worker` VM process matches jobs and creates 8 PM local
-recaps, using database locks, persisted leases, frozen payloads and stable Resend
-idempotency keys. Sending defaults off. Preserve conservative daily/31-day budgets,
+The separate `notifications-worker` VM process matches occurrences and creates 8 PM local
+recaps with separately counted new and reposted sections, using database locks, persisted
+leases, frozen occurrence snapshots and stable Resend idempotency keys. Sending defaults off. Preserve conservative daily/31-day budgets,
 recap reservations, verified-recipient checks and no automatic BYOK fallback.
 Do not retry uncertain sends beyond the provider idempotency window. Secrets are
 versioned Fernet ciphertext, with keys outside the database; never expose them in
