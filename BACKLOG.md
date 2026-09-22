@@ -30,6 +30,23 @@ No blocked backlog items.
 
 ## Recently Completed
 
+### INGEST-LIFECYCLE-004 Authoritative pipeline outcomes under concurrent ingestion
+
+- Owner: ingestion / persistence
+- Status: completed
+- Priority: high
+- Area: ingestion / persistence
+- Context: Pipeline outcomes now reflect the repository's persisted lifecycle transition, so only the transaction creating a repost occurrence reports `ROLE_REPOSTED`.
+- Acceptance criteria:
+  - derive pipeline outcomes from authoritative SQL persistence while preserving posting-only repository APIs
+  - only the transaction creating a repost occurrence reports `ROLE_REPOSTED`
+  - stale pre-read concurrency cannot duplicate repost reporting or event creation
+  - refresh Redis from authoritative persisted state and preserve lifecycle/notification behavior
+  - add deterministic pipeline-level stale-pre-read coverage; run targeted and full validation
+- Notes:
+  - A stale pre-read pipeline regression confirms one repost outcome, one repost occurrence/event, and a losing `NO_OP` outcome.
+  - Full suite passed: `450 passed, 4 skipped`; Ruff and Black checks passed.
+
 ### INGEST-LIFECYCLE-003 Durable repost occurrences and notifications
 
 - Owner: ingestion / notifications
