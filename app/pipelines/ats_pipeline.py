@@ -38,7 +38,13 @@ class Deduplicator(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ATSOutcome:
-    """One successfully classified ATS row."""
+    """One ATS row's SQL-authoritative lifecycle result.
+
+    ``NEW_ROLE`` creates the first discovery, ``ROLE_UPDATED`` changes an existing
+    role without a repost, ``ROLE_CLOSED`` closes the active occurrence,
+    ``ROLE_REPOSTED`` creates a repost occurrence, and ``NO_OP`` makes no
+    authoritative lifecycle transition.
+    """
 
     source: str
     source_id: str | None
@@ -166,6 +172,7 @@ class ATSPipeline:
             else {}
         )
         pending: list[NormalizedJob] = []
+        staged: list[tuple[RawJobPayload, DeduplicationState, NormalizedJob]] = []
         for raw, candidate in candidates:
             existing = existing_by_hash.get(candidate.base_hash)
             evidence = occurrence_evidence.get(candidate.base_hash)
@@ -207,15 +214,32 @@ class ATSPipeline:
             # shared decision while holding SQL locks and applies effective state
             # there, avoiding a stale pre-read being mistaken for closure evidence.
             pending.append(candidate)
-            result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
+            staged.append((raw, state, job))
         if pending and self._repository is not None:
-            persisted = await self._repository.bulk_upsert_job_postings(pending)
-            for posting in persisted:
+            persisted = await self._repository.bulk_upsert_job_postings_with_outcomes(pending)
+            for (raw, _, job), persisted_result in zip(staged, persisted, strict=True):
+                posting = persisted_result.posting
                 await self._deduplicator.classify_and_update(
                     base_hash=posting.base_hash,
                     content_hash=posting.content_hash,
                     is_closed=posting.is_closed,
                 )
+                job = job.model_copy(
+                    update={
+                        "occurrence_kind": (
+                            "reposted"
+                            if persisted_result.state is DeduplicationState.ROLE_REPOSTED
+                            else None
+                        )
+                    }
+                )
+                result.outcomes.append(
+                    ATSOutcome(raw.source, raw.source_id, persisted_result.state, job)
+                )
+        else:
+            result.outcomes.extend(
+                ATSOutcome(raw.source, raw.source_id, state, job) for raw, state, job in staged
+            )
 
     def _normalize(self, raw: RawJobPayload) -> NormalizedJob:
         company = (raw.company or "").strip()

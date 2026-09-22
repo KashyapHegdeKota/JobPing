@@ -200,6 +200,65 @@ async def test_bulk_upsert_rechecks_current_occurrence_before_creating_repost(
 
 
 @pytest.mark.asyncio
+async def test_pipeline_stale_pre_read_reports_repost_only_for_winning_write(
+    sessions: async_sessionmaker[AsyncSession], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dedupe = MemoryDeduplicator()
+    original = raw()
+    repost = raw(
+        source_id="greenhouse:acme:19733",
+        apply_url="https://boards.greenhouse.io/acme/jobs/19733",
+        posted="2026-09-21",
+    )
+    async with sessions() as session:
+        await ingest(original, session, dedupe)
+        await ingest(original.model_copy(update={"is_closed": True}), session, dedupe)
+        pipeline_b = ATSPipeline(
+            [OneRowScraper(repost)], dedupe, session, season=2027, job_type=JobType.INTERNSHIP
+        )
+        pipeline_a = ATSPipeline(
+            [OneRowScraper(repost)], dedupe, session, season=2027, job_type=JobType.INTERNSHIP
+        )
+        original_persist = pipeline_b._repository.bulk_upsert_job_postings_with_outcomes
+        winner_results = []
+
+        async def persist_after_worker_a(jobs: object) -> list[object]:
+            # Pipeline B has already read the closed posting and occurrence. Let A
+            # persist the same repost before B enters the lock-protected write.
+            winner_results.append(await pipeline_a.run())
+            return await original_persist(jobs)
+
+        monkeypatch.setattr(
+            pipeline_b._repository,
+            "bulk_upsert_job_postings_with_outcomes",
+            persist_after_worker_a,
+        )
+        try:
+            loser = await pipeline_b.run()
+        finally:
+            await pipeline_a._scrapers[0].aclose()
+            await pipeline_b._scrapers[0].aclose()
+
+        assert winner_results[0].outcomes[0].state is DeduplicationState.ROLE_REPOSTED
+        assert winner_results[0].outcomes[0].job.occurrence_kind == "reposted"
+        assert loser.outcomes[0].state is DeduplicationState.NO_OP
+        assert loser.outcomes[0].job.occurrence_kind is None
+        assert (
+            sum(
+                outcome.state is DeduplicationState.ROLE_REPOSTED
+                for result in (winner_results[0], loser)
+                for outcome in result.outcomes
+            )
+            == 1
+        )
+        assert await session.scalar(select(func.count()).select_from(JobOccurrence)) == 2
+        assert await session.scalar(select(func.count()).select_from(DiscoveryEvent)) == 2
+        posting = await session.scalar(select(JobPosting))
+        assert posting is not None and not posting.is_closed
+        assert dedupe.values[posting.base_hash] == posting.content_hash
+
+
+@pytest.mark.asyncio
 async def test_applyguy_first_then_greenhouse_and_simplify_coalesce_one_repost(
     sessions: async_sessionmaker[AsyncSession],
 ) -> None:

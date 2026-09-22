@@ -8,6 +8,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -34,6 +35,7 @@ from app.db.models import (
 )
 from app.events.publisher import EventPublisher, JobEventType
 from app.schemas.job import NormalizedJob
+from app.services.deduplicator import DeduplicationState
 from app.services.hasher import (
     canonicalize_apply_url,
     choose_canonical_apply_url,
@@ -49,6 +51,14 @@ from app.services.source_identity import stable_posting_identity
 logger = logging.getLogger(__name__)
 
 _PENDING_EVENTS_KEY = "jobping_pending_events"
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedJobResult:
+    """Posting and lifecycle state established by one authoritative SQL write."""
+
+    posting: JobPosting
+    state: DeduplicationState
 
 
 def _contains_verification_secret(value: str | None) -> bool:
@@ -168,6 +178,12 @@ class DatabaseRepository:
 
     async def save_job_posting(self, normalized_job: NormalizedJob) -> JobPosting:
         """Insert or update a posting using its stable base hash identity."""
+        return (await self.save_job_posting_with_outcome(normalized_job)).posting
+
+    async def save_job_posting_with_outcome(
+        self, normalized_job: NormalizedJob
+    ) -> PersistedJobResult:
+        """Persist one posting and return the lifecycle transition this write made."""
         async with self._transaction():
             observation_job = normalized_job
             company_id = normalized_job.company_id
@@ -223,6 +239,7 @@ class DatabaseRepository:
             }
             was_created = existing is None
             changed = False
+            content_changed = False
             if was_created:
                 existing = JobPosting(base_hash=normalized_job.base_hash, **values)
                 existing.posted_at = normalized_job.posted_at
@@ -232,6 +249,7 @@ class DatabaseRepository:
                     existing.updated_at = normalized_job.updated_at
                 self._session.add(existing)
             else:
+                content_changed = existing.content_hash != content_hash
                 changed = any(getattr(existing, key) != value for key, value in values.items())
                 for key, value in values.items():
                     setattr(existing, key, value)
@@ -248,6 +266,7 @@ class DatabaseRepository:
             await self._session.flush()
             current_occurrence = await self._latest_occurrence(existing.id)
             event_row: dict[str, object] | None = None
+            created_repost = False
             if was_created:
                 current_occurrence = await self._create_occurrence(
                     existing, normalized_job, kind="discovered", previous=None
@@ -275,6 +294,7 @@ class DatabaseRepository:
                     "reposted",
                     current_occurrence.observed_at,
                 )
+                created_repost = True
             elif current_occurrence is None:
                 # Repair an out-of-band legacy insert silently; only a genuinely new
                 # posting or an explicitly classified repost creates a notification.
@@ -309,7 +329,14 @@ class DatabaseRepository:
                         },
                     }
                 )
-            return existing
+            state = self._state_for_persistence(
+                was_created=was_created,
+                created_repost=created_repost,
+                previous_closed=was_closed,
+                is_closed=existing.is_closed,
+                changed=content_changed,
+            )
+            return PersistedJobResult(existing, state)
 
     async def get_job_posting_by_base_hash(self, base_hash: str) -> JobPosting | None:
         """Return the posting identified by its stable hash, if it exists."""
@@ -753,13 +780,22 @@ class DatabaseRepository:
     async def bulk_upsert_job_postings(
         self, normalized_jobs: Sequence[NormalizedJob]
     ) -> list[JobPosting]:
+        """Upsert jobs and return postings in input order for compatibility."""
+        results = await self.bulk_upsert_job_postings_with_outcomes(normalized_jobs)
+        return [result.posting for result in results]
+
+    async def bulk_upsert_job_postings_with_outcomes(
+        self, normalized_jobs: Sequence[NormalizedJob]
+    ) -> list[PersistedJobResult]:
         """Upsert a batch with one company statement and one posting statement.
 
         PostgreSQL's ``ON CONFLICT DO UPDATE`` prevents ingestion throughput from
         degrading into a SELECT/UPDATE round trip per row. SQLite uses its
         equivalent syntax so the production path remains integration-testable.
-        Returned postings preserve the input order, and status/event side effects
-        are derived from the state captured before the atomic upsert.
+        Returned results preserve input order, and status/event side effects are
+        derived from the state captured before the atomic upsert. Lifecycle outcome
+        states follow canonical content hashes, so display-only case/spacing changes
+        remain ``NO_OP`` as they did before detailed outcomes were introduced.
         """
         jobs = list(normalized_jobs)
         if not jobs:
@@ -773,7 +809,7 @@ class DatabaseRepository:
             if dialect not in {"postgresql", "sqlite"}:
                 # Keep unsupported development dialects correct without weakening
                 # the PostgreSQL production fast path.
-                return [await self.save_job_posting(job) for job in jobs]
+                return [await self.save_job_posting_with_outcome(job) for job in jobs]
 
             insert = postgresql_insert if dialect == "postgresql" else sqlite_insert
             company_names = list(
@@ -914,7 +950,6 @@ class DatabaseRepository:
             ).returning(JobPosting)
             statement = statement.execution_options(populate_existing=True)
             persisted = list((await self._session.scalars(statement)).all())
-            by_hash = {posting.base_hash: posting for posting in persisted}
 
             current_occurrences = await self._latest_occurrences_by_job_ids(
                 [posting.id for posting in persisted]
@@ -924,6 +959,7 @@ class DatabaseRepository:
             status_values: list[dict[str, object]] = []
             event_values: list[dict[str, object]] = []
             source_values: list[dict[str, object]] = []
+            result_by_hash: dict[str, PersistedJobResult] = {}
             for posting in persisted:
                 old = previous.get(posting.base_hash)
                 normalized = job_by_hash[posting.base_hash]
@@ -952,6 +988,7 @@ class DatabaseRepository:
                 # concurrent insert. Its occurrence is authoritative, and this
                 # transaction must not emit a second discovery event.
                 was_created = old is None and current_occurrence is None
+                created_repost = False
                 if was_created:
                     current_occurrence = await self._create_occurrence(
                         posting, normalized, kind="discovered", previous=None
@@ -984,6 +1021,7 @@ class DatabaseRepository:
                             current_occurrence.observed_at,
                         )
                     )
+                    created_repost = True
                 elif current_occurrence is None:
                     # Silent deterministic repair for postings created outside the
                     # repository before occurrence support was installed.
@@ -1004,6 +1042,15 @@ class DatabaseRepository:
                 was_changed = old is not None and any(
                     old[key] != getattr(posting, key) for key in old
                 )
+                content_changed = old is not None and old["content_hash"] != posting.content_hash
+                state = self._state_for_persistence(
+                    was_created=was_created,
+                    created_repost=created_repost,
+                    previous_closed=occurrence_was_closed,
+                    is_closed=posting.is_closed,
+                    changed=content_changed,
+                )
+                result_by_hash[posting.base_hash] = PersistedJobResult(posting, state)
                 if self._publisher is not None and (was_created or was_changed):
                     self._queue_job_event(posting, was_created=was_created)
             if status_values:
@@ -1031,7 +1078,29 @@ class DatabaseRepository:
             if event_values:
                 await self._record_discovery_rows(event_values)
             await self._session.flush()
-            return [by_hash[base_hash] for base_hash in hashes]
+            return [result_by_hash[base_hash] for base_hash in hashes]
+
+    @staticmethod
+    def _state_for_persistence(
+        *,
+        was_created: bool,
+        created_repost: bool,
+        previous_closed: bool | None,
+        is_closed: bool,
+        changed: bool,
+    ) -> DeduplicationState:
+        """Map this SQL write's effective transition to its public pipeline state."""
+        if was_created:
+            return DeduplicationState.NEW_ROLE
+        if created_repost:
+            return DeduplicationState.ROLE_REPOSTED
+        if previous_closed is False and is_closed:
+            return DeduplicationState.ROLE_CLOSED
+        if previous_closed is True and not is_closed:
+            return DeduplicationState.ROLE_UPDATED
+        if changed:
+            return DeduplicationState.ROLE_UPDATED
+        return DeduplicationState.NO_OP
 
     async def _latest_occurrence(self, job_id: int) -> JobOccurrence | None:
         return await self._session.scalar(
