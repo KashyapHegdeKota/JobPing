@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import sqlite3
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,12 +18,20 @@ import pytest_asyncio
 from alembic import command
 from alembic.config import Config
 from app.api.deps import get_db
-from app.db.models import Base, DiscoveryEvent, EmailDelivery, JobMatch, JobPosting, Subscriber
+from app.db.models import (
+    Base,
+    DiscoveryEvent,
+    EmailDelivery,
+    JobMatch,
+    JobOccurrence,
+    JobPosting,
+    Subscriber,
+)
 from app.db.repository import DatabaseRepository
 from app.main import create_app
 from app.notifications.api import Settings, put_settings, subscriber
 from app.notifications.core import next_cutoff, utc
-from app.notifications.render import payload, safe_url
+from app.notifications.render import occurrence_rows, payload, safe_url
 from app.notifications.security import Identity, decrypt, encrypt, identity
 from app.notifications.worker import NotificationWorker, budget, delivery, make_recaps, match_events
 from app.schemas.job import NormalizedJob
@@ -84,11 +93,58 @@ async def seed(session: AsyncSession, uid: str = "alice", **changes: object) -> 
 
 
 async def discover(session: AsyncSession, index: int = 1, **changes: object) -> JobPosting:
-    posting = await DatabaseRepository(session).save_job_posting(job(index, **changes))
-    event = await session.get(DiscoveryEvent, posting.id)
+    posting = await DatabaseRepository(session).save_job_posting(
+        job(index, observed_at=NOW, **changes)
+    )
+    event = await session.scalar(
+        select(DiscoveryEvent)
+        .where(DiscoveryEvent.job_id == posting.id)
+        .order_by(DiscoveryEvent.id)
+        .limit(1)
+    )
     if event:
         event.discovered_at = NOW
     await session.flush()
+    return posting
+
+
+async def repost(session: AsyncSession, index: int = 1) -> JobPosting:
+    repository = DatabaseRepository(session)
+    previous_id = f"{index}-old"
+    await repository.save_job_posting(
+        job(
+            index,
+            source="greenhouse",
+            source_id=f"greenhouse:acme:{previous_id}",
+            identity_namespace="greenhouse:acme",
+            external_job_id=previous_id,
+            observed_at=NOW,
+        )
+    )
+    await repository.save_job_posting(
+        job(
+            index,
+            is_closed=True,
+            observed_at=NOW,
+            source="greenhouse",
+            source_id=f"greenhouse:acme:{previous_id}",
+            identity_namespace="greenhouse:acme",
+            external_job_id=previous_id,
+        )
+    )
+    posting = await repository.save_job_posting(
+        job(
+            index,
+            is_closed=False,
+            observed_at=NOW + timedelta(minutes=1),
+            posted_at=NOW + timedelta(minutes=1),
+            source="greenhouse",
+            source_id=f"greenhouse:acme:{index}-new",
+            identity_namespace="greenhouse:acme",
+            external_job_id=f"{index}-new",
+            occurrence_kind="reposted",
+        )
+    )
     return posting
 
 
@@ -117,11 +173,23 @@ async def test_bootstrap_has_no_events(
     sessions: async_sessionmaker, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     async with sessions() as session, session.begin():
-        await DatabaseRepository(session, suppress_notifications=True).bulk_upsert_job_postings(
-            [job()]
+        repo = DatabaseRepository(session, suppress_notifications=True)
+        posting = await repo.save_job_posting(job())
+        await repo.save_job_posting(job(is_closed=True, observed_at=NOW + timedelta(minutes=1)))
+        await repo.save_job_posting(
+            job(
+                observed_at=NOW + timedelta(minutes=2),
+                posted_at=NOW + timedelta(minutes=2),
+                source="greenhouse",
+                source_id="greenhouse:acme:1-new",
+                identity_namespace="greenhouse:acme",
+                external_job_id="1-new",
+                occurrence_kind="reposted",
+            )
         )
         monkeypatch.setenv("NOTIFICATIONS_SUPPRESS_DISCOVERY", "true")
         await DatabaseRepository(session).save_job_posting(job(2))
+        assert posting.id == 1
         assert await session.scalar(select(func.count()).select_from(DiscoveryEvent)) == 0
 
 
@@ -135,6 +203,106 @@ async def test_matching_preferences_no_duplicates_or_backfill(sessions: async_se
         await match_events(session, NOW)
         assert list(await session.scalars(select(JobMatch.subscriber_id))) == ["alice"]
         assert await session.scalar(select(func.count()).select_from(EmailDelivery)) == 1
+
+
+async def test_subscriber_matches_each_occurrence_once_and_repost_alert_is_labeled(
+    sessions: async_sessionmaker,
+) -> None:
+    async with sessions() as session, session.begin():
+        user = await seed(session, recap=False)
+        await discover(session)
+        await match_events(session, NOW)
+        await repost(session)
+        repost_event = await session.scalar(
+            select(DiscoveryEvent)
+            .where(DiscoveryEvent.event_type == "reposted")
+            .order_by(DiscoveryEvent.id.desc())
+        )
+        repost_event.discovered_at = NOW + timedelta(minutes=1)
+        await match_events(session, NOW + timedelta(minutes=2))
+        await match_events(session, NOW + timedelta(minutes=3))
+
+        matches = list(await session.scalars(select(JobMatch).order_by(JobMatch.occurrence_id)))
+        alerts = list(
+            await session.scalars(
+                select(EmailDelivery)
+                .where(EmailDelivery.kind == "alert")
+                .order_by(EmailDelivery.created_at)
+            )
+        )
+        repost_occurrence = await session.scalar(
+            select(JobOccurrence).where(JobOccurrence.kind == "reposted")
+        )
+        repost_alert = next(
+            item for item in alerts if item.occurrence_ids == [repost_occurrence.id]
+        )
+        body = await payload(session, repost_alert, user)
+
+        assert len(matches) == 2
+        assert [match.event_type for match in matches] == ["discovered", "reposted"]
+        assert len(alerts) == 2
+        assert len({item.dedupe_key for item in alerts}) == 2
+        assert body["subject"].startswith("Reposted:")
+        assert "REPOSTED OPPORTUNITY" in body["html"]
+        assert "REPOSTED OPPORTUNITY" in body["text"]
+
+
+async def test_unprocessed_closed_occurrence_does_not_get_alert_after_repost(
+    sessions: async_sessionmaker,
+) -> None:
+    async with sessions() as session, session.begin():
+        await seed(session, recap=False)
+        await discover(session)
+        await repost(session)
+        events = list(await session.scalars(select(DiscoveryEvent).order_by(DiscoveryEvent.id)))
+        events[1].discovered_at = NOW + timedelta(minutes=1)
+        await match_events(session, NOW + timedelta(minutes=2))
+
+        alerts = list(
+            await session.scalars(select(EmailDelivery).where(EmailDelivery.kind == "alert"))
+        )
+        assert len(alerts) == 1
+        occurrence = await session.get(JobOccurrence, alerts[0].occurrence_ids[0])
+        assert occurrence.kind == "reposted"
+
+
+async def test_pending_alert_for_closed_occurrence_is_cancelled_after_repost(
+    sessions: async_sessionmaker,
+) -> None:
+    async with sessions() as session, session.begin():
+        await seed(session, recap=False)
+        posting = await discover(session)
+        await match_events(session, NOW)
+        old_occurrence = await session.scalar(
+            select(JobOccurrence).where(JobOccurrence.kind == "discovered")
+        )
+        old_alert = await session.scalar(
+            select(EmailDelivery).where(EmailDelivery.occurrence_ids == [old_occurrence.id])
+        )
+        await repost(session)
+        repost_event = await session.scalar(
+            select(DiscoveryEvent).where(DiscoveryEvent.event_type == "reposted")
+        )
+        repost_event.discovered_at = NOW + timedelta(minutes=1)
+        await match_events(session, NOW + timedelta(minutes=2))
+        assert posting.id == old_alert.job_ids[0]
+        # The new occurrence alert is accepted to leave only the stale alert claimable.
+        latest = await session.scalar(
+            select(EmailDelivery)
+            .where(EmailDelivery.kind == "alert", EmailDelivery.id != old_alert.id)
+            .limit(1)
+        )
+        latest.status, latest.first_attempt = "accepted", NOW + timedelta(minutes=3)
+
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda _: pytest.fail("Unexpected send"))
+    ) as client:
+        worker = NotificationWorker(sessions, client, verify_recipient=AsyncMock(return_value=True))
+        assert await worker.claim(NOW + timedelta(minutes=4)) is None
+
+    async with sessions() as session:
+        assert await session.get(EmailDelivery, old_alert.id) is not None
+        assert (await session.get(EmailDelivery, old_alert.id)).status == "cancelled"
 
 
 async def test_recap_repeats_sent_jobs_and_folds_unsent_once(sessions: async_sessionmaker) -> None:
@@ -155,6 +323,66 @@ async def test_recap_repeats_sent_jobs_and_folds_unsent_once(sessions: async_ses
         assert len(recaps) == 1 and len(recaps[0].job_ids) == 2
         assert alerts[1].status == "recap_only"
         assert utc(user.window_start) == NOW + timedelta(hours=8)
+
+
+async def test_mixed_recap_separates_new_and_reposted_occurrences(
+    sessions: async_sessionmaker,
+) -> None:
+    async with sessions() as session, session.begin():
+        user = await seed(session)
+        await discover(session, 1)
+        await discover(session, 2)
+        await match_events(session, NOW)
+        await repost(session, 2)
+        repost_event = await session.scalar(
+            select(DiscoveryEvent).where(DiscoveryEvent.event_type == "reposted")
+        )
+        repost_event.discovered_at = NOW + timedelta(minutes=1)
+        await match_events(session, NOW + timedelta(minutes=2))
+        await make_recaps(session, NOW + timedelta(hours=9))
+
+        recap = await session.scalar(select(EmailDelivery).where(EmailDelivery.kind == "recap"))
+        body = await payload(session, recap, user)
+        assert recap.total_matches == 3
+        assert recap.new_count == 2
+        assert recap.reposted_count == 1
+        assert len(recap.occurrence_ids) == 3
+        rows = await occurrence_rows(session, recap.occurrence_ids)
+        assert [(row["kind"], row["closed"]) for row in rows if row["id"] == 2] == [
+            ("discovered", True),
+            ("reposted", False),
+        ]
+        assert body["subject"] == "Your JobPing recap: 2 new, 1 reposted"
+        assert "NEW JOBS · 2" in body["html"]
+        assert "REPOSTED JOBS · 1" in body["html"]
+        assert "REPOSTED" in body["text"]
+        assert "NEW JOBS · 2" in body["text"]
+        assert "REPOSTED JOBS · 1" in body["text"]
+
+
+async def test_recap_with_only_reposts_has_no_new_jobs_section(
+    sessions: async_sessionmaker,
+) -> None:
+    async with sessions() as session, session.begin():
+        user = await seed(session)
+        user.opted_at = NOW + timedelta(seconds=1)
+        await discover(session)
+        await match_events(session, NOW)
+        user.opted_at = NOW
+        await repost(session)
+        repost_event = await session.scalar(
+            select(DiscoveryEvent).where(DiscoveryEvent.event_type == "reposted")
+        )
+        repost_event.discovered_at = NOW + timedelta(minutes=1)
+        await match_events(session, NOW + timedelta(minutes=2))
+        await make_recaps(session, NOW + timedelta(hours=9))
+        recap = await session.scalar(select(EmailDelivery).where(EmailDelivery.kind == "recap"))
+        body = await payload(session, recap, user)
+        assert recap.total_matches == 1
+        assert recap.new_count == 0 and recap.reposted_count == 1
+        assert "Your JobPing recap: 0 new, 1 reposted" == body["subject"]
+        assert "NEW JOBS" not in body["html"]
+        assert "REPOSTED JOBS · 1" in body["html"]
 
 
 async def test_empty_and_downtime_recaps(sessions: async_sessionmaker) -> None:
@@ -220,8 +448,40 @@ async def queued(sessions: async_sessionmaker, **changes: object) -> str:
         return await session.scalar(select(EmailDelivery.id))
 
 
+async def queued_repost(sessions: async_sessionmaker) -> str:
+    async with sessions() as session, session.begin():
+        await seed(session, recap=False)
+        await discover(session)
+        await match_events(session, NOW)
+        original_alert = await session.scalar(
+            select(EmailDelivery).where(EmailDelivery.kind == "alert")
+        )
+        original_alert.status, original_alert.first_attempt = "accepted", NOW
+        await repost(session)
+        event = await session.scalar(
+            select(DiscoveryEvent).where(DiscoveryEvent.event_type == "reposted")
+        )
+        event.discovered_at = NOW + timedelta(minutes=1)
+        await match_events(session, NOW + timedelta(minutes=2))
+        occurrence = await session.scalar(
+            select(JobOccurrence).where(JobOccurrence.kind == "reposted")
+        )
+        return await session.scalar(
+            select(EmailDelivery.id).where(
+                EmailDelivery.kind == "alert",
+                EmailDelivery.occurrence_ids == [occurrence.id],
+            )
+        )
+
+
 async def test_send_retries_frozen_payload_after_restart(sessions: async_sessionmaker) -> None:
-    item_id = await queued(sessions)
+    item_id = await queued_repost(sessions)
+    async with sessions() as session:
+        item = await session.get(EmailDelivery, item_id)
+        occurrence = await session.get(JobOccurrence, item.occurrence_ids[0])
+        assert item.status == "pending"
+        assert occurrence.kind == "reposted" and occurrence.closed_at is None
+        assert utc(item.created_at) == NOW + timedelta(minutes=2)
     requests = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -232,15 +492,16 @@ async def test_send_retries_frozen_payload_after_restart(sessions: async_session
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         worker = NotificationWorker(sessions, client, verify_recipient=AsyncMock(return_value=True))
-        assert await worker.send_one(NOW)
+        assert await worker.send_one(NOW + timedelta(minutes=3))
         async with sessions() as session, session.begin():
             posting = await session.get(JobPosting, 1)
             posting.title = "Changed after request"
         restarted = NotificationWorker(
             sessions, client, verify_recipient=AsyncMock(return_value=True)
         )
-        assert await restarted.send_one(NOW + timedelta(minutes=2))
+        assert await restarted.send_one(NOW + timedelta(minutes=5))
     assert requests[0].content == requests[1].content
+    assert json.loads(requests[0].content)["subject"].startswith("Reposted:")
     assert requests[0].headers["idempotency-key"] == requests[1].headers["idempotency-key"]
     async with sessions() as session:
         item = await session.get(EmailDelivery, item_id)
@@ -493,7 +754,10 @@ async def test_unsent_recaps_combine_after_quota_pause(sessions: async_sessionma
         await match_events(session, NOW)
         await make_recaps(session, NOW + timedelta(hours=9))
         posting = await discover(session, 2)
-        (await session.get(DiscoveryEvent, posting.id)).discovered_at = NOW + timedelta(days=1)
+        event = await session.scalar(
+            select(DiscoveryEvent).where(DiscoveryEvent.job_id == posting.id)
+        )
+        event.discovered_at = NOW + timedelta(days=1)
         await match_events(session, NOW + timedelta(days=1))
         await make_recaps(session, NOW + timedelta(days=1, hours=9))
         recaps = list(
@@ -545,6 +809,101 @@ def test_notification_migration_roundtrip(tmp_path: Path, monkeypatch: pytest.Mo
     command.downgrade(config, "0003_checkpoint_stage")
     command.upgrade(config, "head")
     command.check(config)
+
+
+def test_occurrence_migration_backfills_without_creating_events(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "occurrence-backfill.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{database_path}")
+    config = Config("alembic.ini")
+    command.upgrade(config, "7a7aec011831")
+    connection = sqlite3.connect(database_path)
+    connection.execute(
+        "INSERT INTO companies (id, name, domain, created_at) VALUES (1, 'Acme', NULL, ?)",
+        ("2026-08-01 00:00:00",),
+    )
+    for job_id in (1, 2, 3):
+        connection.execute(
+            """INSERT INTO job_postings
+            (id, company_id, title, base_hash, content_hash, apply_url, location,
+             season, job_type, is_closed, created_at, updated_at, posted_at)
+            VALUES (?, 1, ?, ?, ?, ?, 'Remote', 2027, 'internship', ?, ?, ?, ?)""",
+            (
+                job_id,
+                f"Engineer {job_id}",
+                f"{job_id:064x}",
+                f"{job_id:064x}",
+                f"https://example.com/jobs/{job_id}",
+                int(job_id == 3),
+                "2026-08-01 00:00:00",
+                "2026-08-02 00:00:00",
+                "2026-08-01 00:00:00",
+            ),
+        )
+    connection.execute(
+        """INSERT INTO notification_subscribers
+        (id, email, verified, alerts, recap, job_types, seasons, timezone, provider,
+         webhook_id, connection_version, status, suppressed, unsubscribe_token)
+        VALUES ('alice', 'alice@example.com', 1, 1, 1, ?, ?, 'UTC', 'shared',
+                'webhook-alice', 'v1', 'ready', 0, 'unsubscribe-alice')""",
+        (json.dumps(["internship", "new_grad"]), json.dumps([2026, 2027])),
+    )
+    connection.execute(
+        "INSERT INTO notification_events (job_id, discovered_at, processed) VALUES (1, ?, 0)",
+        ("2026-08-01 00:00:00",),
+    )
+    connection.execute(
+        "INSERT INTO notification_events (job_id, discovered_at, processed) VALUES (2, ?, 1)",
+        ("2026-08-01 00:00:00",),
+    )
+    connection.execute(
+        """INSERT INTO notification_matches (id, subscriber_id, job_id, discovered_at)
+        VALUES (1, 'alice', 1, ?)""",
+        ("2026-08-01 00:00:00",),
+    )
+    connection.execute(
+        """INSERT INTO notification_deliveries
+        (id, subscriber_id, kind, dedupe_key, job_ids, created_at, status, due_at, attempts)
+        VALUES ('delivery-1', 'alice', 'recap', 'recap:alice:legacy', ?, ?, 'pending', ?, 0)""",
+        (
+            json.dumps([1, 2]),
+            "2026-08-01 00:00:00",
+            "2026-08-01 00:00:00",
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    command.upgrade(config, "head")
+    connection = sqlite3.connect(database_path)
+    occurrences = connection.execute(
+        "SELECT id, job_id, kind FROM job_occurrences ORDER BY job_id"
+    ).fetchall()
+    events = connection.execute(
+        "SELECT job_id, occurrence_id, event_type, processed "
+        "FROM notification_events ORDER BY job_id"
+    ).fetchall()
+    matches = connection.execute(
+        "SELECT job_id, occurrence_id, event_type FROM notification_matches"
+    ).fetchall()
+    delivery_row = connection.execute(
+        "SELECT occurrence_ids, total_matches, new_count, reposted_count "
+        "FROM notification_deliveries WHERE id = 'delivery-1'"
+    ).fetchone()
+    connection.close()
+
+    assert len(occurrences) == 3
+    assert all(row[2] == "discovered" for row in occurrences)
+    assert len(events) == 2  # Existing events move; job 3 gets no historical event.
+    assert [(row[0], row[2], row[3]) for row in events] == [
+        (1, "discovered", 0),
+        (2, "discovered", 1),
+    ]
+    assert len(matches) == 1 and matches[0][0] == 1 and matches[0][2] == "discovered"
+    occurrence_ids = json.loads(delivery_row[0])
+    assert occurrence_ids == [occurrences[0][0], occurrences[1][0]]
+    assert delivery_row[1:] == (2, 2, 0)
 
 
 async def test_timezone_detection_does_not_overwrite_saved_choice(api: httpx.AsyncClient) -> None:

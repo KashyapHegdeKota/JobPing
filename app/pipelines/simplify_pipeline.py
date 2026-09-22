@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 
 from pydantic import ValidationError
@@ -16,8 +16,19 @@ from app.scrapers.github_client import (
 )
 from app.scrapers.markdown_parser import MarkdownTableParser, coalesce_html_table_rows
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
-from app.services.hasher import generate_base_hash, generate_content_hash
+from app.services.hasher import (
+    canonicalize_apply_url,
+    choose_canonical_apply_url,
+    generate_base_hash,
+    generate_content_hash,
+)
 from app.services.posting_dates import parse_source_posted_at
+from app.services.repost_classifier import (
+    OccurrenceDecision,
+    decide_occurrence,
+    prepare_candidate,
+)
+from app.services.source_identity import stable_posting_identity
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,19 +135,16 @@ class SimplifyPipeline:
     ) -> None:
         """Normalize and classify parsed rows from either diffs or raw files."""
 
-        added_identities = {
-            generate_base_hash(raw.company or "", raw.title or "")
-            for raw, kind, _ in candidates
-            if kind is ChangeKind.ADDED
-        }
         seen: set[tuple[str, str]] = set()
         for raw, kind, filename in sorted(
             candidates, key=lambda item: item[1] is ChangeKind.REMOVED
         ):
-            base_hash = generate_base_hash(raw.company or "", raw.title or "")
-            if kind is ChangeKind.REMOVED and base_hash in added_identities:
+            # A deleted row is only evidence that this source stopped listing a
+            # role. It is not an employer-confirmed closure transition.
+            if kind is ChangeKind.REMOVED:
                 continue
-            is_closed = bool(raw.is_closed) or kind is ChangeKind.REMOVED
+            base_hash = generate_base_hash(raw.company or "", raw.title or "")
+            is_closed = bool(raw.is_closed)
             try:
                 content_hash = generate_content_hash(
                     base_hash, raw.apply_url or "", str(raw.location or ""), is_closed
@@ -147,6 +155,12 @@ class SimplifyPipeline:
                     )
                     if raw.observed_at
                     else None
+                )
+                identity = stable_posting_identity(
+                    source=raw.source,
+                    source_id=raw.source_id,
+                    apply_url=raw.apply_url or "",
+                    payload=raw.payload,
                 )
                 job = NormalizedJob(
                     company_name=raw.company,
@@ -159,6 +173,11 @@ class SimplifyPipeline:
                     job_type=self._job_type,
                     is_closed=is_closed,
                     posted_at=posted_at,
+                    observed_at=raw.observed_at,
+                    source=raw.source,
+                    source_id=raw.source_id,
+                    identity_namespace=identity[0] if identity else None,
+                    external_job_id=identity[1] if identity else None,
                 )
             except (ValidationError, ValueError) as exc:
                 result.rejected.append(RejectedRow(filename, str(raw.payload), kind, str(exc)))
@@ -226,20 +245,91 @@ class SimplifyPipeline:
 
     @staticmethod
     async def persist_results(
-        repository: DatabaseRepository, results: tuple[PipelineResult, ...]
+        repository: DatabaseRepository,
+        results: tuple[PipelineResult, ...],
+        deduplicator: JobDeduplicator | None = None,
     ) -> int:
-        """Persist classified rows through the repository's batch fast path."""
-        jobs = [
-            item.job
-            for result in results
-            for state in DeduplicationState
-            for item in result.categorized(state)
-        ]
-        # A batch spanning commits can contain the same identity repeatedly. Keep
-        # the final observed state while retaining deterministic first-seen order.
-        latest = {job.base_hash: job for job in jobs}
-        ordered = list(dict.fromkeys(job.base_hash for job in jobs))
-        persisted = await repository.bulk_upsert_job_postings(
-            [latest[base_hash] for base_hash in ordered]
-        )
+        """Reconcile lifecycle evidence, then persist through the batch fast path."""
+        latest_items: dict[str, tuple[PipelineResult, PipelineItem]] = {}
+        for result in results:
+            for state in DeduplicationState:
+                for item in result.categorized(state):
+                    latest_items[item.job.base_hash] = (result, item)
+        ordered = list(latest_items)
+        existing = await repository.get_job_postings_by_base_hashes(ordered)
+        evidence = await repository.get_current_occurrence_evidence(ordered)
+        replacements: dict[int, PipelineItem] = {}
+        normalized_jobs: list[NormalizedJob] = []
+        for base_hash in ordered:
+            result, item = latest_items[base_hash]
+            job = item.job
+            repository_job = job
+            posting = existing.get(base_hash)
+            previous = evidence.get(base_hash)
+            decision = decide_occurrence(
+                job,
+                source=job.source or "",
+                existing=posting,
+                evidence=previous,
+            )
+            job = prepare_candidate(job, decision, existing=posting)
+            if decision is OccurrenceDecision.REPOST:
+                apply_url = canonicalize_apply_url(str(job.apply_url))
+                job = job.model_copy(
+                    update={
+                        "apply_url": apply_url,
+                        "content_hash": generate_content_hash(
+                            job.base_hash, apply_url, job.location, job.is_closed
+                        ),
+                    }
+                )
+                state = DeduplicationState.ROLE_REPOSTED
+            elif decision is OccurrenceDecision.AMBIGUOUS_REOPEN:
+                state = DeduplicationState.NO_OP
+            else:
+                state = item.state
+                if posting is None:
+                    state = DeduplicationState.NEW_ROLE
+                else:
+                    apply_url = choose_canonical_apply_url(posting.apply_url, str(job.apply_url))
+                    job = job.model_copy(
+                        update={
+                            "apply_url": apply_url,
+                            "content_hash": generate_content_hash(
+                                job.base_hash, apply_url, job.location, job.is_closed
+                            ),
+                        }
+                    )
+                    if posting.is_closed and not job.is_closed:
+                        state = DeduplicationState.ROLE_UPDATED
+                    elif not posting.is_closed and job.is_closed:
+                        state = DeduplicationState.ROLE_CLOSED
+                    elif posting.content_hash == job.content_hash:
+                        state = DeduplicationState.NO_OP
+                    elif state in {DeduplicationState.NO_OP, DeduplicationState.NEW_ROLE}:
+                        state = DeduplicationState.ROLE_UPDATED
+            updated = replace(item, state=state, job=job)
+            replacements[id(item)] = updated
+            normalized_jobs.append(repository_job)
+
+        # Reflect the database-authoritative lifecycle decision in each result.
+        for result in results:
+            result_items = [
+                item for state in DeduplicationState for item in result.categorized(state)
+            ]
+            updated_items = [replacements.get(id(item), item) for item in result_items]
+            result.items = {
+                state: [item for item in updated_items if item.state is state]
+                for state in DeduplicationState
+            }
+        persisted = await repository.bulk_upsert_job_postings(normalized_jobs)
+        if deduplicator is not None:
+            # Redis is only a cache. Reapply the state returned by SQL after its
+            # lock-protected lifecycle decision, including ambiguous closures.
+            for posting in persisted:
+                await deduplicator.classify_and_update(
+                    base_hash=posting.base_hash,
+                    content_hash=posting.content_hash,
+                    is_closed=posting.is_closed,
+                )
         return len(persisted)

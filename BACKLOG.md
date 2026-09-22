@@ -6,7 +6,7 @@
 
 ## In Progress
 
-No backlog items are currently in progress.
+No items currently in progress.
 
 ## Ready
 
@@ -29,6 +29,46 @@ No blocked backlog items.
   - add cross-source regression coverage before changing identity semantics
 
 ## Recently Completed
+
+### INGEST-LIFECYCLE-004 Authoritative pipeline outcomes under concurrent ingestion
+
+- Owner: ingestion / persistence
+- Status: completed
+- Priority: high
+- Area: ingestion / persistence
+- Context: Pipeline outcomes now reflect the repository's persisted lifecycle transition, so only the transaction creating a repost occurrence reports `ROLE_REPOSTED`.
+- Acceptance criteria:
+  - derive pipeline outcomes from authoritative SQL persistence while preserving posting-only repository APIs
+  - only the transaction creating a repost occurrence reports `ROLE_REPOSTED`
+  - stale pre-read concurrency cannot duplicate repost reporting or event creation
+  - refresh Redis from authoritative persisted state and preserve lifecycle/notification behavior
+  - add deterministic pipeline-level stale-pre-read coverage; run targeted and full validation
+- Notes:
+  - A stale pre-read pipeline regression confirms one repost outcome, one repost occurrence/event, and a losing `NO_OP` outcome.
+  - Full suite passed: `450 passed, 4 skipped`; Ruff and Black checks passed.
+
+### INGEST-LIFECYCLE-003 Durable repost occurrences and notifications
+
+- Owner: ingestion / notifications
+- Status: completed
+- Priority: high
+- Area: ingestion / persistence / notifications
+- Context: Added persisted discovery/repost occurrences and occurrence-aware notifications, then corrected review findings around weak-source ordering and Workday URL identity.
+- Acceptance criteria:
+  - persist immutable discovered/reposted occurrences and ATS source identity evidence for each logical job
+  - classify a new stable ATS identity after confirmed closure as one repost; same-ID reopening and source/aggregator churn are not reposts
+  - preserve confirmed closure through ambiguous weak open observations and retain their raw provenance
+  - centralize lifecycle decisions and let locked SQL state govern repository writes and final Redis refresh
+  - extract only confident Workday requisition URL tokens; title-only slugs are not stable IDs
+  - reconcile multiple sources observing one open occurrence; notify at most once per subscriber and occurrence
+  - preserve occurrence-aware alerts/recaps, silent historical backfill, notification suppression, and application history
+  - update lifecycle docs and validate migrations, Ruff, Black, and pytest
+- Notes:
+  - Weak-open → authoritative-new-ATS-ID regressions cover both repository write paths, preserve posting/occurrence closure and raw provenance, and create exactly one repost occurrence/event.
+  - Subscriber matching is run twice in the regression; one repost match and one alert are created for the occurrence.
+  - Workday URL identity tests cover R/JR suffixes, bare requisition tokens, title-only slugs, and malformed paths.
+  - No schema change was needed; notification migration roundtrip and silent backfill tests passed.
+  - Full suite passed: `449 passed, 4 skipped`; Ruff and Black checks passed.
 
 ### INGEST-APPLYGUY-001 Harden ApplyGuy cross-source reconciliation
 

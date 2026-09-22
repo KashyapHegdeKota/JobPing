@@ -8,6 +8,7 @@ import os
 import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -25,22 +26,39 @@ from app.db.models import (
     CheckpointStage,
     Company,
     DiscoveryEvent,
+    JobOccurrence,
     JobPosting,
+    JobSourceObservation,
     JobType,
     StatusLog,
     VerificationType,
 )
 from app.events.publisher import EventPublisher, JobEventType
 from app.schemas.job import NormalizedJob
+from app.services.deduplicator import DeduplicationState
 from app.services.hasher import (
     canonicalize_apply_url,
     choose_canonical_apply_url,
     generate_content_hash,
 )
+from app.services.repost_classifier import (
+    decide_occurrence,
+    is_same_repost_occurrence,
+    prepare_candidate,
+)
+from app.services.source_identity import stable_posting_identity
 
 logger = logging.getLogger(__name__)
 
 _PENDING_EVENTS_KEY = "jobping_pending_events"
+
+
+@dataclass(frozen=True, slots=True)
+class PersistedJobResult:
+    """Posting and lifecycle state established by one authoritative SQL write."""
+
+    posting: JobPosting
+    state: DeduplicationState
 
 
 def _contains_verification_secret(value: str | None) -> bool:
@@ -160,21 +178,48 @@ class DatabaseRepository:
 
     async def save_job_posting(self, normalized_job: NormalizedJob) -> JobPosting:
         """Insert or update a posting using its stable base hash identity."""
+        return (await self.save_job_posting_with_outcome(normalized_job)).posting
+
+    async def save_job_posting_with_outcome(
+        self, normalized_job: NormalizedJob
+    ) -> PersistedJobResult:
+        """Persist one posting and return the lifecycle transition this write made."""
         async with self._transaction():
+            observation_job = normalized_job
             company_id = normalized_job.company_id
             if company_id is None:
                 if normalized_job.company_name is None:
                     raise ValueError("normalized job requires company_id or company_name")
                 company_id = (await self.upsert_company(normalized_job.company_name)).id
 
-            existing = await self._session.scalar(
-                select(JobPosting).where(JobPosting.base_hash == normalized_job.base_hash)
+            existing_statement = (
+                select(JobPosting)
+                .where(JobPosting.base_hash == normalized_job.base_hash)
+                .with_for_update()
             )
+            if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
+                existing_statement = existing_statement.execution_options(populate_existing=True)
+            existing = await self._session.scalar(existing_statement)
+            evidence = (await self.get_current_occurrence_evidence([normalized_job.base_hash])).get(
+                normalized_job.base_hash
+            )
+            decision = decide_occurrence(
+                normalized_job,
+                source=normalized_job.source or "",
+                existing=existing,
+                evidence=evidence,
+            )
+            normalized_job = prepare_candidate(normalized_job, decision, existing=existing)
+            was_closed = bool(existing.is_closed) if existing is not None else False
             incoming_url = str(normalized_job.apply_url)
             apply_url = choose_canonical_apply_url("", incoming_url)
             content_hash = normalized_job.content_hash
             if existing is not None:
-                apply_url = choose_canonical_apply_url(existing.apply_url, apply_url)
+                apply_url = (
+                    canonicalize_apply_url(incoming_url)
+                    if normalized_job.occurrence_kind == "reposted"
+                    else choose_canonical_apply_url(existing.apply_url, apply_url)
+                )
             if apply_url != incoming_url or canonicalize_apply_url(incoming_url) != incoming_url:
                 content_hash = generate_content_hash(
                     normalized_job.base_hash,
@@ -194,6 +239,7 @@ class DatabaseRepository:
             }
             was_created = existing is None
             changed = False
+            content_changed = False
             if was_created:
                 existing = JobPosting(base_hash=normalized_job.base_hash, **values)
                 existing.posted_at = normalized_job.posted_at
@@ -203,6 +249,7 @@ class DatabaseRepository:
                     existing.updated_at = normalized_job.updated_at
                 self._session.add(existing)
             else:
+                content_changed = existing.content_hash != content_hash
                 changed = any(getattr(existing, key) != value for key, value in values.items())
                 for key, value in values.items():
                     setattr(existing, key, value)
@@ -210,13 +257,59 @@ class DatabaseRepository:
                     current_posted_at = existing.posted_at
                     if current_posted_at is not None and current_posted_at.tzinfo is None:
                         current_posted_at = current_posted_at.replace(tzinfo=UTC)
-                    if current_posted_at is None or normalized_job.posted_at < current_posted_at:
+                    if normalized_job.occurrence_kind == "reposted":
+                        existing.posted_at = normalized_job.posted_at
+                    elif current_posted_at is None or normalized_job.posted_at < current_posted_at:
                         existing.posted_at = normalized_job.posted_at
                 if changed:
                     existing.updated_at = normalized_job.updated_at or datetime.now(UTC)
             await self._session.flush()
-            if was_created and not existing.is_closed:
-                await self._record_discovery(existing.id)
+            current_occurrence = await self._latest_occurrence(existing.id)
+            event_row: dict[str, object] | None = None
+            created_repost = False
+            if was_created:
+                current_occurrence = await self._create_occurrence(
+                    existing, normalized_job, kind="discovered", previous=None
+                )
+                if not existing.is_closed:
+                    event_row = self._discovery_event_row(
+                        existing.id,
+                        current_occurrence.id,
+                        "discovered",
+                        current_occurrence.observed_at,
+                    )
+            elif (
+                normalized_job.occurrence_kind == "reposted"
+                and current_occurrence is not None
+                and current_occurrence.closed_at is not None
+                and not existing.is_closed
+                and not is_same_repost_occurrence(normalized_job, current_occurrence)
+            ):
+                current_occurrence = await self._create_occurrence(
+                    existing, normalized_job, kind="reposted", previous=current_occurrence
+                )
+                event_row = self._discovery_event_row(
+                    existing.id,
+                    current_occurrence.id,
+                    "reposted",
+                    current_occurrence.observed_at,
+                )
+                created_repost = True
+            elif current_occurrence is None:
+                # Repair an out-of-band legacy insert silently; only a genuinely new
+                # posting or an explicitly classified repost creates a notification.
+                current_occurrence = await self._create_occurrence(
+                    existing, normalized_job, kind="discovered", previous=None
+                )
+            elif not was_closed and existing.is_closed:
+                current_occurrence.closed_at = normalized_job.observed_at or datetime.now(UTC)
+            elif was_closed and not existing.is_closed:
+                current_occurrence.closed_at = None
+            await self._record_source_observations(
+                [(existing, current_occurrence, observation_job)]
+            )
+            if event_row is not None:
+                await self._record_discovery_rows([event_row])
             if self._publisher is not None and (was_created or changed):
                 event_type = JobEventType.JOB_CREATED if was_created else JobEventType.JOB_UPDATED
                 self._session.sync_session.info.setdefault(_PENDING_EVENTS_KEY, []).append(
@@ -236,7 +329,14 @@ class DatabaseRepository:
                         },
                     }
                 )
-            return existing
+            state = self._state_for_persistence(
+                was_created=was_created,
+                created_repost=created_repost,
+                previous_closed=was_closed,
+                is_closed=existing.is_closed,
+                changed=content_changed,
+            )
+            return PersistedJobResult(existing, state)
 
     async def get_job_posting_by_base_hash(self, base_hash: str) -> JobPosting | None:
         """Return the posting identified by its stable hash, if it exists."""
@@ -266,6 +366,55 @@ class DatabaseRepository:
             )
         ).all()
         return {posting.base_hash: posting for posting in postings}
+
+    async def get_current_occurrence_evidence(
+        self, base_hashes: Sequence[str]
+    ) -> dict[str, tuple[JobOccurrence, frozenset[tuple[str, str]]]]:
+        """Batch-load each logical job's latest occurrence and its ATS identities."""
+        normalized_hashes = tuple(dict.fromkeys(value.strip().lower() for value in base_hashes))
+        if not normalized_hashes:
+            return {}
+        rows = await self._session.execute(
+            select(JobPosting.base_hash, JobOccurrence)
+            .join(JobOccurrence, JobOccurrence.job_id == JobPosting.id)
+            .where(JobPosting.base_hash.in_(normalized_hashes))
+            .order_by(JobOccurrence.id)
+        )
+        latest: dict[str, JobOccurrence] = {}
+        for base_hash, occurrence in rows:
+            latest[base_hash] = occurrence
+        occurrence_ids = [occurrence.id for occurrence in latest.values()]
+        identities: dict[int, set[tuple[str, str]]] = {
+            occurrence_id: set() for occurrence_id in occurrence_ids
+        }
+        for occurrence in latest.values():
+            url_identity = stable_posting_identity(
+                source=occurrence.source,
+                source_id=occurrence.source_id,
+                apply_url=occurrence.apply_url,
+                payload={},
+            )
+            if url_identity is not None:
+                identities[occurrence.id].add(url_identity)
+            if occurrence.identity_namespace and occurrence.external_job_id:
+                identities[occurrence.id].add(
+                    (occurrence.identity_namespace, occurrence.external_job_id)
+                )
+        if occurrence_ids:
+            observations = await self._session.scalars(
+                select(JobSourceObservation).where(
+                    JobSourceObservation.occurrence_id.in_(occurrence_ids)
+                )
+            )
+            for observation in observations:
+                if observation.identity_namespace and observation.external_job_id:
+                    identities[observation.occurrence_id].add(
+                        (observation.identity_namespace, observation.external_job_id)
+                    )
+        return {
+            base_hash: (occurrence, frozenset(identities[occurrence.id]))
+            for base_hash, occurrence in latest.items()
+        }
 
     async def get_job_by_id(self, job_id: int) -> JobPosting | None:
         """Return a posting and its company for application inspection."""
@@ -631,13 +780,22 @@ class DatabaseRepository:
     async def bulk_upsert_job_postings(
         self, normalized_jobs: Sequence[NormalizedJob]
     ) -> list[JobPosting]:
+        """Upsert jobs and return postings in input order for compatibility."""
+        results = await self.bulk_upsert_job_postings_with_outcomes(normalized_jobs)
+        return [result.posting for result in results]
+
+    async def bulk_upsert_job_postings_with_outcomes(
+        self, normalized_jobs: Sequence[NormalizedJob]
+    ) -> list[PersistedJobResult]:
         """Upsert a batch with one company statement and one posting statement.
 
         PostgreSQL's ``ON CONFLICT DO UPDATE`` prevents ingestion throughput from
         degrading into a SELECT/UPDATE round trip per row. SQLite uses its
         equivalent syntax so the production path remains integration-testable.
-        Returned postings preserve the input order, and status/event side effects
-        are derived from the state captured before the atomic upsert.
+        Returned results preserve input order, and status/event side effects are
+        derived from the state captured before the atomic upsert. Lifecycle outcome
+        states follow canonical content hashes, so display-only case/spacing changes
+        remain ``NO_OP`` as they did before detailed outcomes were introduced.
         """
         jobs = list(normalized_jobs)
         if not jobs:
@@ -651,7 +809,7 @@ class DatabaseRepository:
             if dialect not in {"postgresql", "sqlite"}:
                 # Keep unsupported development dialects correct without weakening
                 # the PostgreSQL production fast path.
-                return [await self.save_job_posting(job) for job in jobs]
+                return [await self.save_job_posting_with_outcome(job) for job in jobs]
 
             insert = postgresql_insert if dialect == "postgresql" else sqlite_insert
             company_names = list(
@@ -680,11 +838,8 @@ class DatabaseRepository:
                 rows = (await self._session.execute(company_statement)).all()
                 company_ids = {str(row.name): int(row.id) for row in rows}
 
-            previous_rows = (
-                await self._session.scalars(
-                    select(JobPosting).where(JobPosting.base_hash.in_(hashes))
-                )
-            ).all()
+            previous_rows = await self._existing_postings_for_update(hashes)
+            observation_jobs_by_hash = {job.base_hash: job for job in jobs}
             previous = {
                 posting.base_hash: {
                     "company_id": posting.company_id,
@@ -695,10 +850,25 @@ class DatabaseRepository:
                     "season": posting.season,
                     "job_type": posting.job_type,
                     "is_closed": posting.is_closed,
+                    "posted_at": posting.posted_at,
                 }
                 for posting in previous_rows
             }
+            posting_by_hash = {posting.base_hash: posting for posting in previous_rows}
             now = datetime.now(UTC)
+            evidence_by_hash = await self.get_current_occurrence_evidence(hashes)
+            effective_jobs: list[NormalizedJob] = []
+            for job in jobs:
+                posting = posting_by_hash.get(job.base_hash)
+                decision = decide_occurrence(
+                    job,
+                    source=job.source or "",
+                    existing=posting,
+                    evidence=evidence_by_hash.get(job.base_hash),
+                )
+                effective_jobs.append(prepare_candidate(job, decision, existing=posting))
+            jobs = effective_jobs
+            reposted_hashes = {job.base_hash for job in jobs if job.occurrence_kind == "reposted"}
             values: list[dict[str, object]] = []
             for job in jobs:
                 company_id = job.company_id
@@ -709,7 +879,11 @@ class DatabaseRepository:
                 apply_url = choose_canonical_apply_url("", incoming_url)
                 old = previous.get(job.base_hash)
                 if old is not None:
-                    apply_url = choose_canonical_apply_url(str(old["apply_url"]), apply_url)
+                    apply_url = (
+                        canonicalize_apply_url(incoming_url)
+                        if job.occurrence_kind == "reposted"
+                        else choose_canonical_apply_url(str(old["apply_url"]), apply_url)
+                    )
                 content_hash = job.content_hash
                 if (
                     apply_url != incoming_url
@@ -740,6 +914,12 @@ class DatabaseRepository:
 
             statement = insert(JobPosting).values(values)
             excluded = statement.excluded
+            earliest_posted_at = case(
+                (JobPosting.posted_at.is_(None), excluded.posted_at),
+                (excluded.posted_at.is_(None), JobPosting.posted_at),
+                (JobPosting.posted_at < excluded.posted_at, JobPosting.posted_at),
+                else_=excluded.posted_at,
+            )
             changed = or_(
                 JobPosting.company_id != excluded.company_id,
                 JobPosting.title != excluded.title,
@@ -762,22 +942,39 @@ class DatabaseRepository:
                     "job_type": excluded.job_type,
                     "is_closed": excluded.is_closed,
                     "posted_at": case(
-                        (JobPosting.posted_at.is_(None), excluded.posted_at),
-                        (excluded.posted_at.is_(None), JobPosting.posted_at),
-                        (JobPosting.posted_at < excluded.posted_at, JobPosting.posted_at),
-                        else_=excluded.posted_at,
+                        (JobPosting.base_hash.in_(reposted_hashes), excluded.posted_at),
+                        else_=earliest_posted_at,
                     ),
                     "updated_at": case((changed, excluded.updated_at), else_=JobPosting.updated_at),
                 },
             ).returning(JobPosting)
             statement = statement.execution_options(populate_existing=True)
             persisted = list((await self._session.scalars(statement)).all())
-            by_hash = {posting.base_hash: posting for posting in persisted}
+
+            current_occurrences = await self._latest_occurrences_by_job_ids(
+                [posting.id for posting in persisted]
+            )
+            job_by_hash = {job.base_hash: job for job in jobs}
 
             status_values: list[dict[str, object]] = []
+            event_values: list[dict[str, object]] = []
+            source_values: list[dict[str, object]] = []
+            result_by_hash: dict[str, PersistedJobResult] = {}
             for posting in persisted:
                 old = previous.get(posting.base_hash)
-                previous_state = None if old is None else ("CLOSED" if old["is_closed"] else "OPEN")
+                normalized = job_by_hash[posting.base_hash]
+                current_occurrence = current_occurrences.get(posting.id)
+                if current_occurrence is not None:
+                    occurrence_was_closed: bool | None = current_occurrence.closed_at is not None
+                elif old is not None:
+                    occurrence_was_closed = bool(old["is_closed"])
+                else:
+                    occurrence_was_closed = None
+                previous_state = (
+                    None
+                    if occurrence_was_closed is None
+                    else "CLOSED" if occurrence_was_closed else "OPEN"
+                )
                 new_state = "CLOSED" if posting.is_closed else "OPEN"
                 if previous_state != new_state:
                     status_values.append(
@@ -787,30 +984,270 @@ class DatabaseRepository:
                             "new_state": new_state,
                         }
                     )
-                was_created = old is None
-                if was_created and not posting.is_closed:
-                    await self._record_discovery(posting.id)
+                # A missing pre-read row can mean another transaction won the
+                # concurrent insert. Its occurrence is authoritative, and this
+                # transaction must not emit a second discovery event.
+                was_created = old is None and current_occurrence is None
+                created_repost = False
+                if was_created:
+                    current_occurrence = await self._create_occurrence(
+                        posting, normalized, kind="discovered", previous=None
+                    )
+                    if not posting.is_closed:
+                        event_values.append(
+                            self._discovery_event_row(
+                                posting.id,
+                                current_occurrence.id,
+                                "discovered",
+                                current_occurrence.observed_at,
+                            )
+                        )
+                elif (
+                    normalized.occurrence_kind == "reposted"
+                    and old is not None
+                    and occurrence_was_closed is True
+                    and not posting.is_closed
+                    and current_occurrence is not None
+                    and not is_same_repost_occurrence(normalized, current_occurrence)
+                ):
+                    current_occurrence = await self._create_occurrence(
+                        posting, normalized, kind="reposted", previous=current_occurrence
+                    )
+                    event_values.append(
+                        self._discovery_event_row(
+                            posting.id,
+                            current_occurrence.id,
+                            "reposted",
+                            current_occurrence.observed_at,
+                        )
+                    )
+                    created_repost = True
+                elif current_occurrence is None:
+                    # Silent deterministic repair for postings created outside the
+                    # repository before occurrence support was installed.
+                    current_occurrence = await self._create_occurrence(
+                        posting, normalized, kind="discovered", previous=None
+                    )
+                elif occurrence_was_closed is False and posting.is_closed:
+                    current_occurrence.closed_at = normalized.observed_at or now
+                elif occurrence_was_closed is True and not posting.is_closed:
+                    current_occurrence.closed_at = None
+                source_values.extend(
+                    self._source_observation_values(
+                        posting,
+                        current_occurrence,
+                        observation_jobs_by_hash[posting.base_hash],
+                    )
+                )
                 was_changed = old is not None and any(
                     old[key] != getattr(posting, key) for key in old
                 )
+                content_changed = old is not None and old["content_hash"] != posting.content_hash
+                state = self._state_for_persistence(
+                    was_created=was_created,
+                    created_repost=created_repost,
+                    previous_closed=occurrence_was_closed,
+                    is_closed=posting.is_closed,
+                    changed=content_changed,
+                )
+                result_by_hash[posting.base_hash] = PersistedJobResult(posting, state)
                 if self._publisher is not None and (was_created or was_changed):
                     self._queue_job_event(posting, was_created=was_created)
             if status_values:
                 await self._session.execute(insert(StatusLog).values(status_values))
+            if source_values:
+                observation_insert = (
+                    postgresql_insert if dialect == "postgresql" else sqlite_insert
+                )(JobSourceObservation).values(source_values)
+                observation_insert = observation_insert.on_conflict_do_update(
+                    index_elements=[
+                        JobSourceObservation.job_id,
+                        JobSourceObservation.occurrence_id,
+                        JobSourceObservation.source,
+                        JobSourceObservation.source_id,
+                    ],
+                    set_={
+                        "identity_namespace": observation_insert.excluded.identity_namespace,
+                        "external_job_id": observation_insert.excluded.external_job_id,
+                        "apply_url": observation_insert.excluded.apply_url,
+                        "posted_at": observation_insert.excluded.posted_at,
+                        "observed_at": observation_insert.excluded.observed_at,
+                    },
+                )
+                await self._session.execute(observation_insert)
+            if event_values:
+                await self._record_discovery_rows(event_values)
             await self._session.flush()
-            return [by_hash[base_hash] for base_hash in hashes]
+            return [result_by_hash[base_hash] for base_hash in hashes]
 
-    async def _record_discovery(self, job_id: int) -> None:
+    @staticmethod
+    def _state_for_persistence(
+        *,
+        was_created: bool,
+        created_repost: bool,
+        previous_closed: bool | None,
+        is_closed: bool,
+        changed: bool,
+    ) -> DeduplicationState:
+        """Map this SQL write's effective transition to its public pipeline state."""
+        if was_created:
+            return DeduplicationState.NEW_ROLE
+        if created_repost:
+            return DeduplicationState.ROLE_REPOSTED
+        if previous_closed is False and is_closed:
+            return DeduplicationState.ROLE_CLOSED
+        if previous_closed is True and not is_closed:
+            return DeduplicationState.ROLE_UPDATED
+        if changed:
+            return DeduplicationState.ROLE_UPDATED
+        return DeduplicationState.NO_OP
+
+    async def _latest_occurrence(self, job_id: int) -> JobOccurrence | None:
+        return await self._session.scalar(
+            select(JobOccurrence)
+            .where(JobOccurrence.job_id == job_id)
+            .order_by(JobOccurrence.id.desc())
+            .limit(1)
+            .execution_options(populate_existing=True)
+        )
+
+    async def _existing_postings_for_update(self, base_hashes: Sequence[str]) -> list[JobPosting]:
+        """Load and lock existing postings before classifying lifecycle changes."""
+        if not base_hashes:
+            return []
+        rows = await self._session.scalars(
+            select(JobPosting)
+            .where(JobPosting.base_hash.in_(base_hashes))
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return list(rows.all())
+
+    async def _latest_occurrences_by_job_ids(
+        self, job_ids: Sequence[int]
+    ) -> dict[int, JobOccurrence]:
+        if not job_ids:
+            return {}
+        occurrences = await self._session.scalars(
+            select(JobOccurrence)
+            .where(JobOccurrence.job_id.in_(job_ids))
+            .order_by(JobOccurrence.id)
+            .execution_options(populate_existing=True)
+        )
+        latest: dict[int, JobOccurrence] = {}
+        for occurrence in occurrences:
+            latest[occurrence.job_id] = occurrence
+        return latest
+
+    async def _create_occurrence(
+        self,
+        posting: JobPosting,
+        job: NormalizedJob,
+        *,
+        kind: str,
+        previous: JobOccurrence | None,
+    ) -> JobOccurrence:
+        observed_at = job.observed_at or datetime.now(UTC)
+        occurrence = JobOccurrence(
+            job_id=posting.id,
+            kind=kind,
+            observed_at=observed_at,
+            posted_at=job.posted_at,
+            apply_url=canonicalize_apply_url(str(job.apply_url)),
+            identity_namespace=job.identity_namespace,
+            external_job_id=job.external_job_id,
+            source=job.source,
+            source_id=job.source_id,
+            previous_occurrence_id=previous.id if previous is not None else None,
+            closed_at=observed_at if posting.is_closed else None,
+        )
+        self._session.add(occurrence)
+        await self._session.flush()
+        return occurrence
+
+    def _source_observation_values(
+        self, posting: JobPosting, occurrence: JobOccurrence, job: NormalizedJob
+    ) -> list[dict[str, object]]:
+        if not job.source or not job.source_id:
+            return []
+        identity = stable_posting_identity(
+            source=job.source,
+            source_id=job.source_id,
+            apply_url=str(job.apply_url),
+            payload={},
+        )
+        namespace, external_job_id = identity or (job.identity_namespace, job.external_job_id)
+        if namespace is None or external_job_id is None:
+            namespace, external_job_id = job.identity_namespace, job.external_job_id
+        return [
+            {
+                "job_id": posting.id,
+                "occurrence_id": occurrence.id,
+                "source": job.source,
+                "source_id": job.source_id,
+                "identity_namespace": namespace,
+                "external_job_id": external_job_id,
+                "apply_url": canonicalize_apply_url(str(job.apply_url)),
+                "posted_at": job.posted_at,
+                "observed_at": job.observed_at or datetime.now(UTC),
+            }
+        ]
+
+    async def _record_source_observations(
+        self, observations: Sequence[tuple[JobPosting, JobOccurrence, NormalizedJob]]
+    ) -> None:
+        values = [
+            value
+            for posting, occurrence, job in observations
+            for value in self._source_observation_values(posting, occurrence, job)
+        ]
+        if not values:
+            return
+        dialect = self._session.bind.dialect.name if self._session.bind else ""
+        insert = postgresql_insert if dialect == "postgresql" else sqlite_insert
+        statement = insert(JobSourceObservation).values(values)
+        statement = statement.on_conflict_do_update(
+            index_elements=[
+                JobSourceObservation.job_id,
+                JobSourceObservation.occurrence_id,
+                JobSourceObservation.source,
+                JobSourceObservation.source_id,
+            ],
+            set_={
+                "identity_namespace": statement.excluded.identity_namespace,
+                "external_job_id": statement.excluded.external_job_id,
+                "apply_url": statement.excluded.apply_url,
+                "posted_at": statement.excluded.posted_at,
+                "observed_at": statement.excluded.observed_at,
+            },
+        )
+        await self._session.execute(statement)
+
+    def _discovery_event_row(
+        self,
+        job_id: int,
+        occurrence_id: int,
+        event_type: str,
+        observed_at: datetime,
+    ) -> dict[str, object]:
+        return {
+            "job_id": job_id,
+            "occurrence_id": occurrence_id,
+            "event_type": event_type,
+            "discovered_at": observed_at,
+            "processed": False,
+        }
+
+    async def _record_discovery_rows(self, rows: Sequence[dict[str, object]]) -> None:
         if (
             self._suppress_notifications
             or os.environ.get("NOTIFICATIONS_SUPPRESS_DISCOVERY", "false").lower() == "true"
         ):
             return
-        insert = (
-            postgresql_insert if self._session.bind.dialect.name == "postgresql" else sqlite_insert
-        )
+        dialect = self._session.bind.dialect.name if self._session.bind else ""
+        insert = postgresql_insert if dialect == "postgresql" else sqlite_insert
         await self._session.execute(
-            insert(DiscoveryEvent).values(job_id=job_id, processed=False).on_conflict_do_nothing()
+            insert(DiscoveryEvent).values(list(rows)).on_conflict_do_nothing()
         )
 
     def _queue_job_event(self, posting: JobPosting, *, was_created: bool) -> None:

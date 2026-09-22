@@ -95,12 +95,12 @@ async def test_replaced_row_processes_addition_without_false_close() -> None:
 
 
 @pytest.mark.asyncio
-async def test_removed_active_row_becomes_closed_when_not_replaced() -> None:
+async def test_removed_active_row_is_not_treated_as_confirmed_closure() -> None:
     dedupe = FakeDeduplicator([DeduplicationState.ROLE_CLOSED])
     result = await pipeline(detail("-" + row()), dedupe).process_detail(detail("-" + row()))
 
-    assert dedupe.calls[0]["is_closed"] is True
-    assert result.categorized(DeduplicationState.ROLE_CLOSED)[0].job.is_closed is True
+    assert dedupe.calls == []
+    assert result.categorized(DeduplicationState.ROLE_CLOSED) == ()
 
 
 @pytest.mark.asyncio
