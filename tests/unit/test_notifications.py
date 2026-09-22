@@ -110,7 +110,28 @@ async def discover(session: AsyncSession, index: int = 1, **changes: object) -> 
 
 async def repost(session: AsyncSession, index: int = 1) -> JobPosting:
     repository = DatabaseRepository(session)
-    await repository.save_job_posting(job(index, is_closed=True, observed_at=NOW))
+    previous_id = f"{index}-old"
+    await repository.save_job_posting(
+        job(
+            index,
+            source="greenhouse",
+            source_id=f"greenhouse:acme:{previous_id}",
+            identity_namespace="greenhouse:acme",
+            external_job_id=previous_id,
+            observed_at=NOW,
+        )
+    )
+    await repository.save_job_posting(
+        job(
+            index,
+            is_closed=True,
+            observed_at=NOW,
+            source="greenhouse",
+            source_id=f"greenhouse:acme:{previous_id}",
+            identity_namespace="greenhouse:acme",
+            external_job_id=previous_id,
+        )
+    )
     posting = await repository.save_job_posting(
         job(
             index,

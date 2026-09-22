@@ -20,7 +20,11 @@ from app.services.hasher import (
     generate_content_hash,
 )
 from app.services.posting_dates import parse_source_posted_at
-from app.services.repost_classifier import is_repost_candidate
+from app.services.repost_classifier import (
+    OccurrenceDecision,
+    decide_occurrence,
+    prepare_candidate,
+)
 from app.services.source_identity import stable_posting_identity
 
 
@@ -165,19 +169,18 @@ class ATSPipeline:
         for raw, candidate in candidates:
             existing = existing_by_hash.get(candidate.base_hash)
             evidence = occurrence_evidence.get(candidate.base_hash)
-            reposted = (
-                existing is not None
-                and evidence is not None
-                and is_repost_candidate(
-                    candidate, source=raw.source, existing=existing, evidence=evidence
-                )
-            )
-            job = self._reconcile_persisted_url(
+            decision = decide_occurrence(
                 candidate,
+                source=raw.source,
+                existing=existing,
+                evidence=evidence,
+            )
+            effective_candidate = prepare_candidate(candidate, decision, existing=existing)
+            reposted = decision is OccurrenceDecision.REPOST
+            job = self._reconcile_persisted_url(
+                effective_candidate,
                 None if reposted or existing is None else existing.apply_url,
             )
-            if reposted:
-                job = job.model_copy(update={"occurrence_kind": "reposted"})
             state = await self._deduplicator.classify_and_update(
                 base_hash=job.base_hash,
                 content_hash=job.content_hash,
@@ -200,10 +203,19 @@ class ATSPipeline:
                     state = DeduplicationState.ROLE_UPDATED
             # Persist every coalesced observation in one batch. NO_OP rows repair
             # provenance and let PostgreSQL repair a warm-cache/database mismatch.
-            pending.append(job)
+            # Persist the raw normalized observation. The repository reruns the
+            # shared decision while holding SQL locks and applies effective state
+            # there, avoiding a stale pre-read being mistaken for closure evidence.
+            pending.append(candidate)
             result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
         if pending and self._repository is not None:
-            await self._repository.bulk_upsert_job_postings(pending)
+            persisted = await self._repository.bulk_upsert_job_postings(pending)
+            for posting in persisted:
+                await self._deduplicator.classify_and_update(
+                    base_hash=posting.base_hash,
+                    content_hash=posting.content_hash,
+                    is_closed=posting.is_closed,
+                )
 
     def _normalize(self, raw: RawJobPayload) -> NormalizedJob:
         company = (raw.company or "").strip()

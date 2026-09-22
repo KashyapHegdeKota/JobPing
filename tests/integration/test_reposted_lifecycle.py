@@ -9,11 +9,15 @@ import pytest
 from app.db.models import (
     Base,
     DiscoveryEvent,
+    EmailDelivery,
+    JobMatch,
     JobOccurrence,
     JobPosting,
     JobSourceObservation,
+    Subscriber,
 )
 from app.db.repository import DatabaseRepository
+from app.notifications.worker import match_events
 from app.pipelines.ats_pipeline import ATSPipeline
 from app.pipelines.simplify_pipeline import SimplifyPipeline
 from app.schemas.job import JobType, RawJobPayload
@@ -265,12 +269,141 @@ async def test_aggregator_churn_and_same_old_ats_id_do_not_create_repost(
         restored = raw(
             source="applyguy",
             source_id="different-feed-record",
-            apply_url="https://job-boards.greenhouse.io/acme/jobs/123",
+            apply_url="https://applyguy.ai/jobs/acme-software-engineer",
             posted="2026-09-21",
         )
-        assert await ingest(restored, session, dedupe) is DeduplicationState.ROLE_UPDATED
+        assert await ingest(restored, session, dedupe) is DeduplicationState.NO_OP
         assert await session.scalar(select(func.count()).select_from(JobOccurrence)) == 1
         assert await session.scalar(select(func.count()).select_from(DiscoveryEvent)) == 1
+        posting = await session.scalar(select(JobPosting))
+        occurrence = await session.scalar(select(JobOccurrence))
+        assert posting is not None and posting.is_closed is True
+        assert occurrence is not None and occurrence.closed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_weak_open_keeps_closure_for_later_authoritative_repost(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    dedupe = MemoryDeduplicator()
+    async with sessions() as session:
+        await ingest(raw(), session, dedupe)
+        await ingest(raw(closed=True), session, dedupe)
+        weak = raw(
+            source="applyguy",
+            source_id="feed-record-weak",
+            apply_url="https://applyguy.ai/jobs/acme-software-engineer",
+            posted="2026-09-21",
+        )
+        assert await ingest(weak, session, dedupe) is DeduplicationState.NO_OP
+        posting = await session.scalar(select(JobPosting))
+        occurrence = await session.scalar(select(JobOccurrence))
+        assert posting is not None and posting.is_closed is True
+        assert occurrence is not None and occurrence.closed_at is not None
+        observation = await session.scalar(
+            select(JobSourceObservation).where(JobSourceObservation.source_id == weak.source_id)
+        )
+        assert observation is not None
+        assert observation.apply_url == weak.apply_url
+        assert observation.posted_at.replace(tzinfo=UTC) == datetime(2026, 9, 21, tzinfo=UTC)
+        assert dedupe.values[posting.base_hash] == posting.content_hash
+        assert await session.scalar(select(func.count()).select_from(JobOccurrence)) == 1
+
+        repost = raw(
+            source_id="greenhouse:acme:19733",
+            apply_url="https://boards.greenhouse.io/acme/jobs/19733",
+            posted="2026-09-22",
+        )
+        assert await ingest(repost, session, dedupe) is DeduplicationState.ROLE_REPOSTED
+        occurrences = list(await session.scalars(select(JobOccurrence).order_by(JobOccurrence.id)))
+        events = list(await session.scalars(select(DiscoveryEvent).order_by(DiscoveryEvent.id)))
+        assert [item.kind for item in occurrences] == ["discovered", "reposted"]
+        assert occurrences[-1].apply_url == "https://job-boards.greenhouse.io/acme/jobs/19733"
+        assert [event.event_type for event in events] == ["discovered", "reposted"]
+        user = Subscriber(
+            id="repost-test-user",
+            email="repost-test@example.com",
+            verified=True,
+            alerts=True,
+            recap=False,
+            job_types=["internship"],
+            seasons=[2027],
+            timezone="UTC",
+            opted_at=datetime(2026, 9, 1, tzinfo=UTC),
+            webhook_id="repost-test-webhook",
+            connection_version="v1",
+            unsubscribe_token="repost-test-unsubscribe",
+        )
+        session.add(user)
+        await session.flush()
+        await match_events(session, datetime(2026, 9, 22, tzinfo=UTC))
+        await match_events(session, datetime(2026, 9, 22, tzinfo=UTC))
+        repost_occurrence = occurrences[-1]
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(JobMatch)
+                .where(
+                    JobMatch.subscriber_id == user.id,
+                    JobMatch.occurrence_id == repost_occurrence.id,
+                    JobMatch.event_type == "reposted",
+                )
+            )
+            == 1
+        )
+        assert (
+            await session.scalar(
+                select(func.count())
+                .select_from(EmailDelivery)
+                .where(
+                    EmailDelivery.subscriber_id == user.id,
+                    EmailDelivery.kind == "alert",
+                    EmailDelivery.occurrence_ids == [repost_occurrence.id],
+                )
+            )
+            == 1
+        )
+
+
+@pytest.mark.asyncio
+async def test_single_repository_save_preserves_ambiguous_closure_and_allows_later_repost(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    async with sessions() as session:
+        pipeline = ATSPipeline(
+            [], MemoryDeduplicator(), session, season=2027, job_type=JobType.INTERNSHIP
+        )
+        repository = DatabaseRepository(session)
+        first = pipeline._normalize(raw())
+        await repository.save_job_posting(first)
+        closed = pipeline._normalize(raw(closed=True))
+        await repository.save_job_posting(closed)
+
+        weak = pipeline._normalize(
+            raw(
+                source="applyguy",
+                source_id="feed-record-weak",
+                apply_url="https://applyguy.ai/jobs/acme-software-engineer",
+                posted="2026-09-21",
+            )
+        )
+        await repository.save_job_posting(weak)
+        posting = await session.scalar(select(JobPosting))
+        occurrence = await session.scalar(select(JobOccurrence))
+        assert posting is not None and posting.is_closed is True
+        assert occurrence is not None and occurrence.closed_at is not None
+
+        repost = pipeline._normalize(
+            raw(
+                source_id="greenhouse:acme:19733",
+                apply_url="https://boards.greenhouse.io/acme/jobs/19733",
+                posted="2026-09-22",
+            )
+        )
+        await repository.save_job_posting(repost)
+        occurrences = list(await session.scalars(select(JobOccurrence).order_by(JobOccurrence.id)))
+        assert [item.kind for item in occurrences] == ["discovered", "reposted"]
+        assert occurrences[-1].apply_url == "https://job-boards.greenhouse.io/acme/jobs/19733"
 
 
 @pytest.mark.asyncio
@@ -303,8 +436,10 @@ async def test_different_ats_tenant_is_not_a_stable_id_repost(
             apply_url="https://boards.greenhouse.io/other/jobs/19733",
             posted="2026-09-21",
         )
-        assert await ingest(moved, session, dedupe) is DeduplicationState.ROLE_UPDATED
+        assert await ingest(moved, session, dedupe) is DeduplicationState.NO_OP
         assert await session.scalar(select(func.count()).select_from(JobOccurrence)) == 1
+        posting = await session.scalar(select(JobPosting))
+        assert posting is not None and posting.is_closed is True
 
 
 @pytest.mark.asyncio
@@ -360,8 +495,10 @@ async def test_url_and_new_date_fallback_requires_direct_ats_source(
             apply_url="https://applyguy.ai/jobs/new",
             posted="2026-09-21",
         )
-        assert await ingest(aggregator_return, session, dedupe) is DeduplicationState.ROLE_UPDATED
+        assert await ingest(aggregator_return, session, dedupe) is DeduplicationState.NO_OP
         assert await session.scalar(select(func.count()).select_from(JobOccurrence)) == 1
+        posting = await session.scalar(select(JobPosting))
+        assert posting is not None and posting.is_closed is True
 
     # A changed URL plus a newer posted date from a direct ATS source is the
     # conservative fallback when neither occurrence has a stable requisition ID.

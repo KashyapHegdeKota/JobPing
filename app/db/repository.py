@@ -39,7 +39,11 @@ from app.services.hasher import (
     choose_canonical_apply_url,
     generate_content_hash,
 )
-from app.services.repost_classifier import is_same_repost_occurrence
+from app.services.repost_classifier import (
+    decide_occurrence,
+    is_same_repost_occurrence,
+    prepare_candidate,
+)
 from app.services.source_identity import stable_posting_identity
 
 logger = logging.getLogger(__name__)
@@ -165,6 +169,7 @@ class DatabaseRepository:
     async def save_job_posting(self, normalized_job: NormalizedJob) -> JobPosting:
         """Insert or update a posting using its stable base hash identity."""
         async with self._transaction():
+            observation_job = normalized_job
             company_id = normalized_job.company_id
             if company_id is None:
                 if normalized_job.company_name is None:
@@ -179,6 +184,16 @@ class DatabaseRepository:
             if self._session.bind is not None and self._session.bind.dialect.name == "postgresql":
                 existing_statement = existing_statement.execution_options(populate_existing=True)
             existing = await self._session.scalar(existing_statement)
+            evidence = (await self.get_current_occurrence_evidence([normalized_job.base_hash])).get(
+                normalized_job.base_hash
+            )
+            decision = decide_occurrence(
+                normalized_job,
+                source=normalized_job.source or "",
+                existing=existing,
+                evidence=evidence,
+            )
+            normalized_job = prepare_candidate(normalized_job, decision, existing=existing)
             was_closed = bool(existing.is_closed) if existing is not None else False
             incoming_url = str(normalized_job.apply_url)
             apply_url = choose_canonical_apply_url("", incoming_url)
@@ -270,7 +285,9 @@ class DatabaseRepository:
                 current_occurrence.closed_at = normalized_job.observed_at or datetime.now(UTC)
             elif was_closed and not existing.is_closed:
                 current_occurrence.closed_at = None
-            await self._record_source_observations([(existing, current_occurrence, normalized_job)])
+            await self._record_source_observations(
+                [(existing, current_occurrence, observation_job)]
+            )
             if event_row is not None:
                 await self._record_discovery_rows([event_row])
             if self._publisher is not None and (was_created or changed):
@@ -786,6 +803,7 @@ class DatabaseRepository:
                 company_ids = {str(row.name): int(row.id) for row in rows}
 
             previous_rows = await self._existing_postings_for_update(hashes)
+            observation_jobs_by_hash = {job.base_hash: job for job in jobs}
             previous = {
                 posting.base_hash: {
                     "company_id": posting.company_id,
@@ -800,7 +818,20 @@ class DatabaseRepository:
                 }
                 for posting in previous_rows
             }
+            posting_by_hash = {posting.base_hash: posting for posting in previous_rows}
             now = datetime.now(UTC)
+            evidence_by_hash = await self.get_current_occurrence_evidence(hashes)
+            effective_jobs: list[NormalizedJob] = []
+            for job in jobs:
+                posting = posting_by_hash.get(job.base_hash)
+                decision = decide_occurrence(
+                    job,
+                    source=job.source or "",
+                    existing=posting,
+                    evidence=evidence_by_hash.get(job.base_hash),
+                )
+                effective_jobs.append(prepare_candidate(job, decision, existing=posting))
+            jobs = effective_jobs
             reposted_hashes = {job.base_hash for job in jobs if job.occurrence_kind == "reposted"}
             values: list[dict[str, object]] = []
             for job in jobs:
@@ -964,7 +995,11 @@ class DatabaseRepository:
                 elif occurrence_was_closed is True and not posting.is_closed:
                     current_occurrence.closed_at = None
                 source_values.extend(
-                    self._source_observation_values(posting, current_occurrence, normalized)
+                    self._source_observation_values(
+                        posting,
+                        current_occurrence,
+                        observation_jobs_by_hash[posting.base_hash],
+                    )
                 )
                 was_changed = old is not None and any(
                     old[key] != getattr(posting, key) for key in old

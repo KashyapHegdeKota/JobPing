@@ -120,18 +120,20 @@ async def _process_commits(
                     refs = tuple(commit.sha for commit in commits)
                 results = tuple([await pipeline.process_commit(owner, repo, ref) for ref in refs])
             if database_url:
-                await _persist_results(results, database_url)
+                await _persist_results(results, database_url, deduplicator)
             return results
 
 
-async def _persist_results(results: tuple[PipelineResult, ...], database_url: str) -> int:
+async def _persist_results(
+    results: tuple[PipelineResult, ...], database_url: str, deduplicator: JobDeduplicator
+) -> int:
     """Persist parsed jobs, including NO_OP rows during cache/database recovery."""
     engine = create_async_engine(database_url)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with sessions() as session, session.begin():
             repository = DatabaseRepository(session)
-            return await SimplifyPipeline.persist_results(repository, results)
+            return await SimplifyPipeline.persist_results(repository, results, deduplicator)
     finally:
         await engine.dispose()
 
@@ -205,7 +207,7 @@ async def _process_full_sync_files(
                 target_readme_paths=set(target_readmes),
             )
             results = await pipeline.process_full_sync_files(owner, repo, target_readmes, ref=ref)
-            persisted = await _persist_results(results, database_url)
+            persisted = await _persist_results(results, database_url, deduplicator)
             return results, persisted
 
 
@@ -241,7 +243,7 @@ async def _process_full_sync_repositories(
                     for target, result in zip(target_readmes, results, strict=True)
                 )
             persisted = await _persist_results(
-                tuple(result for _, _, result in labeled_results), database_url
+                tuple(result for _, _, result in labeled_results), database_url, deduplicator
             )
             return tuple(labeled_results), persisted
 

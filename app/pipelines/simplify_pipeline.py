@@ -23,7 +23,11 @@ from app.services.hasher import (
     generate_content_hash,
 )
 from app.services.posting_dates import parse_source_posted_at
-from app.services.repost_classifier import is_repost_candidate
+from app.services.repost_classifier import (
+    OccurrenceDecision,
+    decide_occurrence,
+    prepare_candidate,
+)
 from app.services.source_identity import stable_posting_identity
 
 
@@ -241,7 +245,9 @@ class SimplifyPipeline:
 
     @staticmethod
     async def persist_results(
-        repository: DatabaseRepository, results: tuple[PipelineResult, ...]
+        repository: DatabaseRepository,
+        results: tuple[PipelineResult, ...],
+        deduplicator: JobDeduplicator | None = None,
     ) -> int:
         """Reconcile lifecycle evidence, then persist through the batch fast path."""
         latest_items: dict[str, tuple[PipelineResult, PipelineItem]] = {}
@@ -257,16 +263,17 @@ class SimplifyPipeline:
         for base_hash in ordered:
             result, item = latest_items[base_hash]
             job = item.job
+            repository_job = job
             posting = existing.get(base_hash)
             previous = evidence.get(base_hash)
-            reposted = (
-                posting is not None
-                and previous is not None
-                and is_repost_candidate(
-                    job, source=job.source or "", existing=posting, evidence=previous
-                )
+            decision = decide_occurrence(
+                job,
+                source=job.source or "",
+                existing=posting,
+                evidence=previous,
             )
-            if reposted:
+            job = prepare_candidate(job, decision, existing=posting)
+            if decision is OccurrenceDecision.REPOST:
                 apply_url = canonicalize_apply_url(str(job.apply_url))
                 job = job.model_copy(
                     update={
@@ -274,10 +281,11 @@ class SimplifyPipeline:
                         "content_hash": generate_content_hash(
                             job.base_hash, apply_url, job.location, job.is_closed
                         ),
-                        "occurrence_kind": "reposted",
                     }
                 )
                 state = DeduplicationState.ROLE_REPOSTED
+            elif decision is OccurrenceDecision.AMBIGUOUS_REOPEN:
+                state = DeduplicationState.NO_OP
             else:
                 state = item.state
                 if posting is None:
@@ -302,7 +310,7 @@ class SimplifyPipeline:
                         state = DeduplicationState.ROLE_UPDATED
             updated = replace(item, state=state, job=job)
             replacements[id(item)] = updated
-            normalized_jobs.append(job)
+            normalized_jobs.append(repository_job)
 
         # Reflect the database-authoritative lifecycle decision in each result.
         for result in results:
@@ -315,4 +323,13 @@ class SimplifyPipeline:
                 for state in DeduplicationState
             }
         persisted = await repository.bulk_upsert_job_postings(normalized_jobs)
+        if deduplicator is not None:
+            # Redis is only a cache. Reapply the state returned by SQL after its
+            # lock-protected lifecycle decision, including ambiguous closures.
+            for posting in persisted:
+                await deduplicator.classify_and_update(
+                    base_hash=posting.base_hash,
+                    content_hash=posting.content_hash,
+                    is_closed=posting.is_closed,
+                )
         return len(persisted)
