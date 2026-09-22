@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from app.services.hasher import canonicalize_apply_url
 
 _DIRECT_ATS_SOURCES = frozenset({"greenhouse", "lever", "workday", "ashby", "amazon", "meta"})
+_WORKDAY_REQUISITION_SUFFIX = re.compile(r"(?:^|[_-])((?:R-\d+|JR\d+))$", re.IGNORECASE)
 
 
 def stable_posting_identity(
@@ -64,6 +65,13 @@ def _identity_from_url(value: str) -> tuple[str, str] | None:
             if segment.casefold() in {"job", "jobs"}:
                 external_id = path[index + 1]
                 if external_id:
+                    requisition = _WORKDAY_REQUISITION_SUFFIX.search(external_id)
+                    if requisition is not None:
+                        external_id = requisition.group(1)
+                    elif re.fullmatch(r"(?:R-\d+|JR\d+)", external_id, re.IGNORECASE) is None:
+                        # Title-only slugs are mutable and must not count as
+                        # authoritative requisition identity evidence.
+                        return None
                     return f"workday:{host}", external_id[:255]
     if _on_domain(host, "amazon.jobs"):
         for index, segment in enumerate(path[:-1]):
