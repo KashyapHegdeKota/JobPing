@@ -20,6 +20,7 @@ class DeduplicationState(StrEnum):
     NEW_ROLE = "NEW_ROLE"
     ROLE_UPDATED = "ROLE_UPDATED"
     ROLE_CLOSED = "ROLE_CLOSED"
+    ROLE_REPOSTED = "ROLE_REPOSTED"
     NO_OP = "NO_OP"
 
 

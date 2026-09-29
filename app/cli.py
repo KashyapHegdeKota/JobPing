@@ -138,14 +138,16 @@ async def _process_commits(
                 await engine.dispose()
 
 
-async def _persist_results(results: tuple[PipelineResult, ...], database_url: str) -> int:
+async def _persist_results(
+    results: tuple[PipelineResult, ...], database_url: str, deduplicator: JobDeduplicator
+) -> int:
     """Persist parsed jobs, including NO_OP rows during cache/database recovery."""
     engine = create_async_engine(database_url)
     sessions = async_sessionmaker(engine, expire_on_commit=False)
     try:
         async with sessions() as session, session.begin():
             repository = DatabaseRepository(session)
-            return await SimplifyPipeline.persist_results(repository, results)
+            return await SimplifyPipeline.persist_results(repository, results, deduplicator)
     finally:
         await engine.dispose()
 
