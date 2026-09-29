@@ -22,6 +22,7 @@ from app.services.hasher import (
     generate_base_hash,
     generate_content_hash,
 )
+from app.services.location_reconciliation import reconcile_location
 from app.services.posting_dates import parse_source_posted_at
 from app.services.repost_classifier import (
     OccurrenceDecision,
@@ -80,6 +81,7 @@ class SimplifyPipeline:
         season: int,
         job_type: JobType,
         target_readme_paths: set[str] | None = None,
+        repository: DatabaseRepository | None = None,
     ) -> None:
         if season not in {2026, 2027}:
             raise ValueError("season must be 2026 or 2027")
@@ -88,6 +90,7 @@ class SimplifyPipeline:
         self._season = season
         self._job_type = job_type
         self._targets = target_readme_paths
+        self._repository = repository
 
     async def process_commit(self, owner: str, repo: str, ref: str | None = None) -> PipelineResult:
         """Fetch and process one commit reference."""
@@ -136,6 +139,13 @@ class SimplifyPipeline:
         """Normalize and classify parsed rows from either diffs or raw files."""
 
         seen: set[tuple[str, str]] = set()
+        existing_by_hash = (
+            await self._repository.get_job_postings_by_base_hashes(
+                [generate_base_hash(raw.company or "", raw.title or "") for raw, _, _ in candidates]
+            )
+            if self._repository is not None
+            else {}
+        )
         for raw, kind, filename in sorted(
             candidates, key=lambda item: item[1] is ChangeKind.REMOVED
         ):
@@ -169,6 +179,7 @@ class SimplifyPipeline:
                     content_hash=content_hash,
                     apply_url=raw.apply_url,
                     location=str(raw.location or ""),
+                    location_source=raw.source,
                     season=self._season,
                     job_type=self._job_type,
                     is_closed=is_closed,
@@ -179,15 +190,33 @@ class SimplifyPipeline:
                     identity_namespace=identity[0] if identity else None,
                     external_job_id=identity[1] if identity else None,
                 )
+                existing = existing_by_hash.get(base_hash)
+                if existing is not None:
+                    effective_url = choose_canonical_apply_url(
+                        existing.apply_url, str(job.apply_url)
+                    )
+                    job = job.model_copy(
+                        update={
+                            "apply_url": effective_url,
+                            "content_hash": generate_content_hash(
+                                base_hash, effective_url, job.location, is_closed
+                            ),
+                        }
+                    )
+                job = reconcile_location(
+                    job,
+                    existing_location=existing.location if existing is not None else None,
+                    existing_source=(existing.location_source if existing is not None else None),
+                )
             except (ValidationError, ValueError) as exc:
                 result.rejected.append(RejectedRow(filename, str(raw.payload), kind, str(exc)))
                 continue
-            signature = (base_hash, content_hash)
+            signature = (base_hash, job.content_hash)
             if signature in seen:
                 continue
             seen.add(signature)
             state = await self._deduplicator.classify_and_update(
-                base_hash=base_hash, content_hash=content_hash, is_closed=is_closed
+                base_hash=base_hash, content_hash=job.content_hash, is_closed=is_closed
             )
             item = PipelineItem(state, job, raw, source_sha, source_url, filename, kind)
             result.items[state].append(item)

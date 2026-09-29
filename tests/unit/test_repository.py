@@ -10,6 +10,7 @@ import pytest_asyncio
 from app.db.models import Base, Company, JobPosting, StatusLog
 from app.db.repository import DatabaseRepository
 from app.schemas.job import NormalizedJob
+from app.services.hasher import generate_content_hash
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -262,3 +263,50 @@ async def test_explicit_transaction_composes_all_writes(session: AsyncSession) -
 async def test_missing_job_rejected(session: AsyncSession) -> None:
     with pytest.raises(ValueError, match="does not exist"):
         await DatabaseRepository(session).log_status_change(999, None, "NEW_ROLE")
+
+
+def make_location_job(location: str, source: str | None) -> NormalizedJob:
+    base_hash = "a" * 64
+    return make_job(
+        content_hash=generate_content_hash(
+            base_hash, "https://example.com/jobs/1", location, False
+        ),
+        location=location,
+        location_source=source,
+    )
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+async def test_location_source_policy_is_shared_by_single_and_bulk_writes(
+    session: AsyncSession, bulk: bool
+) -> None:
+    repository = DatabaseRepository(session)
+
+    async def save(job: NormalizedJob) -> JobPosting:
+        if not bulk:
+            return await repository.save_job_posting(job)
+        return (await repository.bulk_upsert_job_postings([job]))[0]
+
+    await save(make_location_job("Remote", "applyguy_internships"))
+    upgraded = await save(make_location_job("Remote, U.S.", "greenhouse"))
+    lower_source = await save(make_location_job("Remote", "applyguy_internships"))
+
+    assert upgraded.location == "Remote, U.S."
+    assert upgraded.location_source == "greenhouse"
+    assert lower_source.location == "Remote, U.S."
+    assert lower_source.location_source == "greenhouse"
+    assert lower_source.content_hash == upgraded.content_hash
+
+
+async def test_legacy_and_unknown_location_provenance_are_conservative(
+    session: AsyncSession,
+) -> None:
+    repository = DatabaseRepository(session)
+    await repository.save_job_posting(make_location_job("Remote", None))
+    upgraded = await repository.save_job_posting(make_location_job("Remote, U.S.", "greenhouse"))
+    unknown = await repository.save_job_posting(make_location_job("Austin, TX", "custom_feed"))
+
+    assert upgraded.location == "Remote, U.S."
+    assert upgraded.location_source == "greenhouse"
+    assert unknown.location == upgraded.location
+    assert unknown.location_source == upgraded.location_source

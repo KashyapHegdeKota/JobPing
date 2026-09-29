@@ -19,6 +19,7 @@ from app.services.hasher import (
     generate_base_hash,
     generate_content_hash,
 )
+from app.services.location_reconciliation import reconcile_location
 from app.services.posting_dates import parse_source_posted_at
 from app.services.repost_classifier import (
     OccurrenceDecision,
@@ -87,9 +88,10 @@ class ATSPipelineResult:
 class ATSPipeline:
     """Normalize, deduplicate, and persist Greenhouse/Lever scraper output.
 
-    Scrapers and their rows are processed in caller order; the first occurrence
-    of a base identity wins. Redis classification necessarily precedes the SQL
-    transaction. A SQL failure is raised (never hidden), but the current
+    Scrapers and their rows are processed in caller order. The first occurrence
+    supplies the row's other fields, while duplicate locations are coalesced by
+    the shared source-authority policy. Redis classification necessarily
+    precedes the SQL transaction. A SQL failure is raised (never hidden), but the current
     deduplicator API has no compare-and-restore primitive, so its cache may be
     ahead of PostgreSQL until TTL expiry or a later reconciliation pass.
     """
@@ -115,7 +117,7 @@ class ATSPipeline:
     async def run(self) -> ATSPipelineResult:
         """Run each scraper and persist non-no-op classifications."""
         result = ATSPipelineResult()
-        seen: set[str] = set()
+        seen: dict[str, int] = {}
         candidates: list[tuple[RawJobPayload, NormalizedJob]] = []
         for scraper in self._scrapers:
             try:
@@ -137,11 +139,33 @@ class ATSPipeline:
                     result.rejected.append(ATSRejection(raw.source, raw.source_id, str(exc)))
                     continue
                 if job.base_hash in seen:
+                    index = seen[job.base_hash]
+                    previous_raw, previous_job = candidates[index]
+                    merged = reconcile_location(
+                        job,
+                        existing_location=previous_job.location,
+                        existing_source=previous_job.location_source,
+                    )
+                    candidates[index] = (
+                        previous_raw,
+                        previous_job.model_copy(
+                            update={
+                                "location": merged.location,
+                                "location_source": merged.location_source,
+                                "content_hash": generate_content_hash(
+                                    previous_job.base_hash,
+                                    str(previous_job.apply_url),
+                                    merged.location,
+                                    previous_job.is_closed,
+                                ),
+                            }
+                        ),
+                    )
                     result.duplicates.append(
                         ATSRejection(raw.source, raw.source_id, "duplicate base identity in run")
                     )
                     continue
-                seen.add(job.base_hash)
+                seen[job.base_hash] = len(candidates)
                 candidates.append((raw, job))
 
         if self._session is not None and not self._session.in_transaction():
@@ -188,33 +212,22 @@ class ATSPipeline:
                 effective_candidate,
                 None if reposted or existing is None else existing.apply_url,
             )
+            job = reconcile_location(
+                job,
+                existing_location=existing.location if existing is not None else None,
+                existing_source=(existing.location_source if existing is not None else None),
+            )
             state = await self._deduplicator.classify_and_update(
                 base_hash=job.base_hash,
                 content_hash=job.content_hash,
                 is_closed=job.is_closed,
             )
-            if reposted:
-                state = DeduplicationState.ROLE_REPOSTED
-            elif self._repository is not None:
-                # Redis is a cache. PostgreSQL remains authoritative when it has a
-                # logical job, and a warm Redis key must not suppress database repair.
-                if existing is None:
-                    state = DeduplicationState.NEW_ROLE
-                elif existing.is_closed and not job.is_closed:
-                    state = DeduplicationState.ROLE_UPDATED
-                elif not existing.is_closed and job.is_closed:
-                    state = DeduplicationState.ROLE_CLOSED
-                elif existing.content_hash == job.content_hash:
-                    state = DeduplicationState.NO_OP
-                elif state in {DeduplicationState.NO_OP, DeduplicationState.NEW_ROLE}:
-                    state = DeduplicationState.ROLE_UPDATED
-            # Persist every coalesced observation in one batch. NO_OP rows repair
-            # provenance and let PostgreSQL repair a warm-cache/database mismatch.
-            # Persist the raw normalized observation. The repository reruns the
-            # shared decision while holding SQL locks and applies effective state
-            # there, avoiding a stale pre-read being mistaken for closure evidence.
-            pending.append(candidate)
-            staged.append((raw, state, job))
+            location_metadata_changed = existing is not None and (
+                existing.location != job.location or existing.location_source != job.location_source
+            )
+            if state is not DeduplicationState.NO_OP or location_metadata_changed:
+                pending.append(job)
+            result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
         if pending and self._repository is not None:
             persisted = await self._repository.bulk_upsert_job_postings_with_outcomes(pending)
             for (raw, _, job), persisted_result in zip(staged, persisted, strict=True):
@@ -267,6 +280,7 @@ class ATSPipeline:
             content_hash=content_hash,
             apply_url=apply_url,
             location=location,
+            location_source=raw.source,
             season=self._season,
             job_type=self._job_type,
             is_closed=closed,

@@ -127,6 +127,7 @@ class JobPosting(Base):
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     apply_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     location: Mapped[str] = mapped_column(String(500), nullable=False)
+    location_source: Mapped[str | None] = mapped_column(String(100))
     season: Mapped[int] = mapped_column(nullable=False)
     job_type: Mapped[JobType] = mapped_column(
         Enum(JobType, name="job_type", values_callable=lambda enum: [item.value for item in enum]),
