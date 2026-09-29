@@ -139,3 +139,28 @@ async def test_caller_commit_publishes_only_after_commit(session: AsyncSession) 
     await repository.wait_for_pending_events()
 
     client.publish.assert_awaited_once()
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+async def test_location_provenance_upgrade_does_not_publish_an_update(
+    session: AsyncSession, bulk: bool
+) -> None:
+    publisher, client = publisher_with_mock()
+    repository = DatabaseRepository(session, publisher)
+
+    async def save(source: str) -> None:
+        job = make_job(location_source=source)
+        if bulk:
+            await repository.bulk_upsert_job_postings([job])
+        else:
+            await repository.save_job_posting(job)
+
+    await save("applyguy_internships")
+    await repository.wait_for_pending_events()
+    await save("greenhouse")
+    await repository.wait_for_pending_events()
+
+    posting = await repository.get_job_posting_by_base_hash("a" * 64)
+    assert posting is not None
+    assert posting.location_source == "greenhouse"
+    client.publish.assert_awaited_once()

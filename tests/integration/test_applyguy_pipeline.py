@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from app.db.models import Base, DiscoveryEvent, JobPosting
+from app.db.repository import DatabaseRepository
 from app.pipelines.applyguy_pipeline import ApplyGuyPipeline
 from app.pipelines.ats_pipeline import ATSPipeline
 from app.pipelines.simplify_pipeline import SimplifyPipeline
@@ -37,27 +38,25 @@ class MemoryDeduplicator:
 
 class OneRowScraper(BaseScraper):
     def __init__(self, row: RawJobPayload) -> None:
-        super().__init__(
-            scraper_name=row.source, company=row.company or "Unknown", client=httpx.AsyncClient()
-        )
+        super().__init__(scraper_name=row.source, company=row.company or "Unknown")
         self.row = row
 
     async def fetch_jobs(self) -> list[RawJobPayload]:
         return [self.row]
 
 
-def greenhouse_row() -> RawJobPayload:
+def greenhouse_row(*, location: str = "Remote, U.S.") -> RawJobPayload:
     return RawJobPayload(
         source="greenhouse",
         source_id="greenhouse:mercury:6199367004",
         company="Mercury",
         title="Software Engineering Intern - Spring 2027",
         apply_url="https://boards.greenhouse.io/mercury/jobs/6199367004",
-        location="Remote, U.S.",
+        location=location,
     )
 
 
-def applyguy_payload() -> dict[str, object]:
+def applyguy_payload(*, location: str = "Remote, U.S.") -> dict[str, object]:
     return {
         "updatedAt": "2026-09-21T20:15:30.615Z",
         "jobs": [
@@ -65,7 +64,7 @@ def applyguy_payload() -> dict[str, object]:
                 "id": "mercury-1",
                 "company": "Mercury",
                 "title": "Software Engineering Intern - Spring 2027",
-                "location": "Remote, U.S.",
+                "location": location,
                 "posted": "2026-09-21",
                 "url": "https://applyguy.ai/jobs?id=mercury-1",
                 "listingUrl": "https://job-boards.greenhouse.io/mercury/jobs/6199367004",
@@ -91,6 +90,179 @@ async def run_direct(dedupe: MemoryDeduplicator, session: AsyncSession) -> Dedup
         return result.outcomes[0].state
     finally:
         await scraper.aclose()
+
+
+async def run_location_source(
+    source: str,
+    location: str,
+    dedupe: MemoryDeduplicator,
+    session: AsyncSession,
+) -> DeduplicationState:
+    if source == "greenhouse":
+        row = greenhouse_row(location=location)
+        scraper = OneRowScraper(row)
+        try:
+            result = await ATSPipeline(
+                [scraper], dedupe, session, season=2027, job_type=JobType.INTERNSHIP
+            ).run()
+            return result.outcomes[0].state
+        finally:
+            await scraper.aclose()
+    body = applyguy_payload(location=location)
+    client = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, request=request, json=body)
+        )
+    )
+    scraper = ApplyGuyScraper("internship", client=client)
+    try:
+        result = await ApplyGuyPipeline(scraper, dedupe, session).run()
+        return result.outcomes[0].state
+    finally:
+        await scraper.aclose()
+        await client.aclose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("first_source", "second_source", "expected"),
+    [
+        (
+            "applyguy_internships",
+            "greenhouse",
+            [DeduplicationState.NEW_ROLE, DeduplicationState.ROLE_UPDATED],
+        ),
+        (
+            "greenhouse",
+            "applyguy_internships",
+            [DeduplicationState.NEW_ROLE, DeduplicationState.NO_OP],
+        ),
+    ],
+)
+async def test_location_authority_stabilizes_remote_labels_in_both_orders(
+    first_source: str,
+    second_source: str,
+    expected: list[DeduplicationState],
+) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    dedupe = MemoryDeduplicator()
+    async with factory() as session:
+        states = [
+            await run_location_source(
+                first_source,
+                "Remote" if first_source == "applyguy_internships" else "Remote, U.S.",
+                dedupe,
+                session,
+            ),
+            await run_location_source(
+                second_source,
+                "Remote" if second_source == "applyguy_internships" else "Remote, U.S.",
+                dedupe,
+                session,
+            ),
+            await run_location_source(
+                first_source,
+                "Remote" if first_source == "applyguy_internships" else "Remote, U.S.",
+                dedupe,
+                session,
+            ),
+        ]
+        assert states == [*expected, DeduplicationState.NO_OP]
+        posting = (await session.scalars(select(JobPosting))).one()
+        assert posting.location == "Remote, U.S."
+        assert posting.location_source == "greenhouse"
+        assert dedupe.values[posting.base_hash] == posting.content_hash
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_same_location_source_can_correct_a_genuine_city_change() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    dedupe = MemoryDeduplicator()
+    async with factory() as session:
+        first = await run_location_source("greenhouse", "Austin, TX", dedupe, session)
+        second = await run_location_source("greenhouse", "Seattle, WA", dedupe, session)
+        posting = (await session.scalars(select(JobPosting))).one()
+        assert first is DeduplicationState.NEW_ROLE
+        assert second is DeduplicationState.ROLE_UPDATED
+        assert posting.location == "Seattle, WA"
+        assert posting.location_source == "greenhouse"
+        assert dedupe.values[posting.base_hash] == posting.content_hash
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("greenhouse_first", [False, True])
+async def test_duplicate_rows_coalesce_by_location_authority(greenhouse_first: bool) -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    dedupe = MemoryDeduplicator()
+    async with factory() as session:
+        greenhouse = greenhouse_row(location="Remote, U.S.")
+        applyguy = greenhouse.model_copy(
+            update={"source": "applyguy_internships", "location": "Remote"}
+        )
+        rows = [greenhouse, applyguy] if greenhouse_first else [applyguy, greenhouse]
+        scrapers = [OneRowScraper(row) for row in rows]
+        try:
+            result = await ATSPipeline(
+                scrapers, dedupe, session, season=2027, job_type=JobType.INTERNSHIP
+            ).run()
+        finally:
+            for scraper in scrapers:
+                await scraper.aclose()
+
+        assert len(result.outcomes) == 1
+        assert len(result.duplicates) == 1
+        assert result.outcomes[0].job.location == "Remote, U.S."
+        assert result.outcomes[0].job.location_source == "greenhouse"
+        posting = (await session.scalars(select(JobPosting))).one()
+        assert posting.location == "Remote, U.S."
+        assert posting.location_source == "greenhouse"
+        assert dedupe.values[posting.base_hash] == posting.content_hash
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_simplify_uses_effective_persisted_location_and_url_before_redis() -> None:
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as connection:
+        await connection.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    dedupe = MemoryDeduplicator()
+    async with factory() as session:
+        direct = OneRowScraper(greenhouse_row(location="Remote, U.S."))
+        initial = await ATSPipeline(
+            [direct], dedupe, session, season=2027, job_type=JobType.INTERNSHIP
+        ).run()
+        await direct.aclose()
+        assert initial.outcomes[0].state is DeduplicationState.NEW_ROLE
+
+        repository = DatabaseRepository(session)
+        simplify = SimplifyPipeline(
+            _SimplifyGitHub(location="Remote", apply_url="https://applyguy.ai/jobs?id=mercury-1"),
+            dedupe,  # type: ignore[arg-type]
+            season=2027,
+            job_type=JobType.INTERNSHIP,
+            repository=repository,
+        )
+        result = await simplify.process_commit("SimplifyJobs", "Summer2027-Internships")
+        assert result.categorized(DeduplicationState.NO_OP)
+        await SimplifyPipeline.persist_results(repository, (result,))
+        posting = (await session.scalars(select(JobPosting))).one()
+        assert posting.location == "Remote, U.S."
+        assert posting.location_source == "greenhouse"
+        assert posting.apply_url == "https://job-boards.greenhouse.io/mercury/jobs/6199367004"
+        assert dedupe.values[posting.base_hash] == posting.content_hash
+    await engine.dispose()
 
 
 async def run_applyguy_fallback(
@@ -263,12 +435,20 @@ async def test_lever_and_applyguy_share_one_posting() -> None:
 
 
 class _SimplifyGitHub:
+    def __init__(
+        self,
+        *,
+        location: str = "Remote, U.S.",
+        apply_url: str = "https://boards.greenhouse.io/mercury/jobs/6199367004?utm_source=Simplify",
+    ) -> None:
+        self.location = location
+        self.apply_url = apply_url
+
     async def get_commit(self, *args: object, **kwargs: object) -> GitHubCommitDetail:
         del args, kwargs
         patch = (
-            "+| Mercury | Software Engineering Intern - Spring 2027 | Remote, U.S. | "
-            "[Apply](https://boards.greenhouse.io/mercury/jobs/6199367004?"
-            "utm_source=Simplify) | Today |"
+            "+| Mercury | Software Engineering Intern - Spring 2027 | "
+            f"{self.location} | [Apply]({self.apply_url}) | Today |"
         )
         return GitHubCommitDetail(
             "simplify-sha",

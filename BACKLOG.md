@@ -16,19 +16,24 @@ No blocked backlog items.
 
 ## Deferred / Technical Debt
 
+## Recently Completed
+
 ### INGEST-IDENTITY-002 Cross-source location reconciliation
 
-- Owner: unassigned
-- Status: deferred
+- Owner: ingestion
+- Status: completed
 - Priority: medium
 - Area: ingestion
-- Context: Content hashing safely normalizes Unicode, case, and whitespace, but materially different source descriptions such as `Remote` and `Remote, U.S.` remain distinct and may produce legitimate `ROLE_UPDATED` classifications.
+- Context: Persisted location source provenance and deterministic authority selection across ATS, ApplyGuy, Simplify, and both repository save paths. Redis classification uses the effective persisted content state.
 - Acceptance criteria:
-  - define a provenance-aware, deterministic location authority policy without fuzzy matching
-  - preserve genuinely different locations such as `Austin, TX` and `Seattle, WA`
-  - add cross-source regression coverage before changing identity semantics
-
-## Recently Completed
+  - provenance-aware authority policy without fuzzy matching; job identity hashes remain unchanged
+  - same-source changes preserve genuinely different locations such as `Austin, TX` and `Seattle, WA`
+  - cross-source polling and duplicate-order regressions, legacy/unknown sources, missing locations, and provenance-only upgrades covered
+  - Alembic location-source upgrade/downgrade verified against isolated SQLite
+  - GPT-6 Luna implementation independently reviewed; full pytest passes (`442 passed, 4 skipped`), Ruff and Black pass
+- Notes:
+  - Apply migration `0006_location_source` before using the updated ingestion code.
+  - Cross-run reconciliation requires database-backed ingestion; standalone classification has no persisted provenance.
 
 ### INGEST-APPLYGUY-001 Harden ApplyGuy cross-source reconciliation
 

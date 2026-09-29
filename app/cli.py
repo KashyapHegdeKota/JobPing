@@ -99,29 +99,43 @@ async def _process_commits(
     """Process one explicit commit or a bounded batch of recent commits."""
     async with GitHubClient(token=github_token) as github:
         async with JobDeduplicator.from_url(redis_url) as deduplicator:
-            pipeline = SimplifyPipeline(
-                github,
-                deduplicator,
-                season=season,
-                job_type=job_type,
-                target_readme_paths={target_readme},
-            )
-            if full_sync:
-                results = (
-                    await pipeline.process_full_sync(
-                        owner, repo, path=target_readme, ref=commit_sha or "dev"
-                    ),
+
+            async def run(
+                repository: DatabaseRepository | None = None,
+            ) -> tuple[PipelineResult, ...]:
+                pipeline = SimplifyPipeline(
+                    github,
+                    deduplicator,
+                    season=season,
+                    job_type=job_type,
+                    target_readme_paths={target_readme},
+                    repository=repository,
                 )
-            else:
+                if full_sync:
+                    return (
+                        await pipeline.process_full_sync(
+                            owner, repo, path=target_readme, ref=commit_sha or "dev"
+                        ),
+                    )
                 if commit_sha:
                     refs = (commit_sha,)
                 else:
                     commits = await github.list_commits(owner, repo, ref="dev", per_page=limit)
                     refs = tuple(commit.sha for commit in commits)
-                results = tuple([await pipeline.process_commit(owner, repo, ref) for ref in refs])
-            if database_url:
-                await _persist_results(results, database_url)
-            return results
+                return tuple([await pipeline.process_commit(owner, repo, ref) for ref in refs])
+
+            if database_url is None:
+                return await run()
+            engine = create_async_engine(database_url)
+            sessions = async_sessionmaker(engine, expire_on_commit=False)
+            try:
+                async with sessions() as session, session.begin():
+                    repository = DatabaseRepository(session)
+                    results = await run(repository)
+                    await SimplifyPipeline.persist_results(repository, results)
+                    return results
+            finally:
+                await engine.dispose()
 
 
 async def _persist_results(results: tuple[PipelineResult, ...], database_url: str) -> int:
@@ -197,16 +211,26 @@ async def _process_full_sync_files(
     """Fetch raw Markdown targets, classify them, and bulk-persist one batch."""
     async with GitHubClient(token=github_token) as github:
         async with JobDeduplicator.from_url(redis_url) as deduplicator:
-            pipeline = SimplifyPipeline(
-                github,
-                deduplicator,
-                season=season,
-                job_type=job_type,
-                target_readme_paths=set(target_readmes),
-            )
-            results = await pipeline.process_full_sync_files(owner, repo, target_readmes, ref=ref)
-            persisted = await _persist_results(results, database_url)
-            return results, persisted
+            engine = create_async_engine(database_url)
+            sessions = async_sessionmaker(engine, expire_on_commit=False)
+            try:
+                async with sessions() as session, session.begin():
+                    repository = DatabaseRepository(session)
+                    pipeline = SimplifyPipeline(
+                        github,
+                        deduplicator,
+                        season=season,
+                        job_type=job_type,
+                        target_readme_paths=set(target_readmes),
+                        repository=repository,
+                    )
+                    results = await pipeline.process_full_sync_files(
+                        owner, repo, target_readmes, ref=ref
+                    )
+                    persisted = await SimplifyPipeline.persist_results(repository, results)
+                    return results, persisted
+            finally:
+                await engine.dispose()
 
 
 async def _process_full_sync_repositories(
@@ -223,27 +247,37 @@ async def _process_full_sync_repositories(
     """Fetch both current-cycle repositories and persist one combined batch."""
     async with GitHubClient(token=github_token) as github:
         async with JobDeduplicator.from_url(redis_url) as deduplicator:
-            labeled_results: list[tuple[str, str, PipelineResult]] = []
-            for repo in repos:
-                job_type = JobType.NEW_GRAD if repo == "New-Grad-Positions" else JobType.INTERNSHIP
-                pipeline = SimplifyPipeline(
-                    github,
-                    deduplicator,
-                    season=season,
-                    job_type=job_type,
-                    target_readme_paths=set(target_readmes),
-                )
-                results = await pipeline.process_full_sync_files(
-                    owner, repo, target_readmes, ref=ref
-                )
-                labeled_results.extend(
-                    (repo, target, result)
-                    for target, result in zip(target_readmes, results, strict=True)
-                )
-            persisted = await _persist_results(
-                tuple(result for _, _, result in labeled_results), database_url
-            )
-            return tuple(labeled_results), persisted
+            engine = create_async_engine(database_url)
+            sessions = async_sessionmaker(engine, expire_on_commit=False)
+            try:
+                async with sessions() as session, session.begin():
+                    repository = DatabaseRepository(session)
+                    labeled_results: list[tuple[str, str, PipelineResult]] = []
+                    for repo in repos:
+                        job_type = (
+                            JobType.NEW_GRAD if repo == "New-Grad-Positions" else JobType.INTERNSHIP
+                        )
+                        pipeline = SimplifyPipeline(
+                            github,
+                            deduplicator,
+                            season=season,
+                            job_type=job_type,
+                            target_readme_paths=set(target_readmes),
+                            repository=repository,
+                        )
+                        results = await pipeline.process_full_sync_files(
+                            owner, repo, target_readmes, ref=ref
+                        )
+                        labeled_results.extend(
+                            (repo, target, result)
+                            for target, result in zip(target_readmes, results, strict=True)
+                        )
+                    persisted = await SimplifyPipeline.persist_results(
+                        repository, tuple(result for _, _, result in labeled_results)
+                    )
+                    return tuple(labeled_results), persisted
+            finally:
+                await engine.dispose()
 
 
 def _summary(result: PipelineResult) -> str:

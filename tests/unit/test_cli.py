@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
 from app import cli
 from app.db.models import ApplicationStatus
 from app.pipelines.ats_pipeline import ATSPipelineResult
@@ -15,6 +16,99 @@ from pytest import MonkeyPatch
 from typer.testing import CliRunner
 
 runner = CliRunner()
+
+
+def test_simplify_repository_is_injected_and_engine_closes_on_failure(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeSession:
+        async def __aenter__(self) -> FakeSession:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+        def begin(self) -> SimpleNamespace:
+            class Transaction:
+                async def __aenter__(self) -> None:
+                    return None
+
+                async def __aexit__(self, *args: object) -> None:
+                    del args
+
+            return Transaction()
+
+    class FakeEngine:
+        disposed = False
+
+        async def dispose(self) -> None:
+            self.disposed = True
+
+    class FakeGitHub:
+        def __init__(self, *, token: str | None) -> None:
+            del token
+
+        async def __aenter__(self) -> FakeGitHub:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+    class FakeDeduplicator:
+        @classmethod
+        def from_url(cls, url: str) -> FakeDeduplicator:
+            del url
+            return cls()
+
+        async def __aenter__(self) -> FakeDeduplicator:
+            return self
+
+        async def __aexit__(self, *args: object) -> None:
+            del args
+
+    class FakePipeline:
+        def __init__(self, *args: object, repository: object, **kwargs: object) -> None:
+            del args, kwargs
+            captured["repository"] = repository
+
+        async def process_commit(self, *args: object) -> PipelineResult:
+            del args
+            raise RuntimeError("commit failed")
+
+        @staticmethod
+        async def persist_results(*args: object) -> int:
+            del args
+            return 0
+
+    engine = FakeEngine()
+    monkeypatch.setattr(cli, "GitHubClient", FakeGitHub)
+    monkeypatch.setattr(cli, "JobDeduplicator", FakeDeduplicator)
+    monkeypatch.setattr(cli, "SimplifyPipeline", FakePipeline)
+    monkeypatch.setattr(cli, "create_async_engine", lambda url: engine)
+    monkeypatch.setattr(cli, "async_sessionmaker", lambda *args, **kwargs: lambda: FakeSession())
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        cli._asyncio_run(
+            cli._process_commits(
+                owner="Example",
+                repo="Jobs",
+                commit_sha="abc",
+                limit=1,
+                target_readme="README.md",
+                season=2027,
+                job_type=JobType.INTERNSHIP,
+                redis_url="redis://localhost",
+                github_token=None,
+                database_url="sqlite+aiosqlite:///jobs.db",
+            )
+        )
+
+    from app.db.repository import DatabaseRepository
+
+    assert isinstance(captured["repository"], DatabaseRepository)
+    assert engine.disposed
 
 
 def test_inspect_application_human_and_json(monkeypatch: MonkeyPatch) -> None:

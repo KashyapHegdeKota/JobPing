@@ -19,6 +19,7 @@ from app.services.hasher import (
     generate_base_hash,
     generate_content_hash,
 )
+from app.services.location_reconciliation import reconcile_location
 from app.services.posting_dates import parse_source_posted_at
 
 
@@ -75,9 +76,10 @@ class ATSPipelineResult:
 class ATSPipeline:
     """Normalize, deduplicate, and persist Greenhouse/Lever scraper output.
 
-    Scrapers and their rows are processed in caller order; the first occurrence
-    of a base identity wins. Redis classification necessarily precedes the SQL
-    transaction. A SQL failure is raised (never hidden), but the current
+    Scrapers and their rows are processed in caller order. The first occurrence
+    supplies the row's other fields, while duplicate locations are coalesced by
+    the shared source-authority policy. Redis classification necessarily
+    precedes the SQL transaction. A SQL failure is raised (never hidden), but the current
     deduplicator API has no compare-and-restore primitive, so its cache may be
     ahead of PostgreSQL until TTL expiry or a later reconciliation pass.
     """
@@ -103,7 +105,7 @@ class ATSPipeline:
     async def run(self) -> ATSPipelineResult:
         """Run each scraper and persist non-no-op classifications."""
         result = ATSPipelineResult()
-        seen: set[str] = set()
+        seen: dict[str, int] = {}
         candidates: list[tuple[RawJobPayload, NormalizedJob]] = []
         for scraper in self._scrapers:
             try:
@@ -125,11 +127,33 @@ class ATSPipeline:
                     result.rejected.append(ATSRejection(raw.source, raw.source_id, str(exc)))
                     continue
                 if job.base_hash in seen:
+                    index = seen[job.base_hash]
+                    previous_raw, previous_job = candidates[index]
+                    merged = reconcile_location(
+                        job,
+                        existing_location=previous_job.location,
+                        existing_source=previous_job.location_source,
+                    )
+                    candidates[index] = (
+                        previous_raw,
+                        previous_job.model_copy(
+                            update={
+                                "location": merged.location,
+                                "location_source": merged.location_source,
+                                "content_hash": generate_content_hash(
+                                    previous_job.base_hash,
+                                    str(previous_job.apply_url),
+                                    merged.location,
+                                    previous_job.is_closed,
+                                ),
+                            }
+                        ),
+                    )
                     result.duplicates.append(
                         ATSRejection(raw.source, raw.source_id, "duplicate base identity in run")
                     )
                     continue
-                seen.add(job.base_hash)
+                seen[job.base_hash] = len(candidates)
                 candidates.append((raw, job))
 
         if self._session is not None and not self._session.in_transaction():
@@ -158,12 +182,20 @@ class ATSPipeline:
             job = self._reconcile_persisted_url(
                 candidate, existing.apply_url if existing is not None else None
             )
+            job = reconcile_location(
+                job,
+                existing_location=existing.location if existing is not None else None,
+                existing_source=(existing.location_source if existing is not None else None),
+            )
             state = await self._deduplicator.classify_and_update(
                 base_hash=job.base_hash,
                 content_hash=job.content_hash,
                 is_closed=job.is_closed,
             )
-            if state is not DeduplicationState.NO_OP:
+            location_metadata_changed = existing is not None and (
+                existing.location != job.location or existing.location_source != job.location_source
+            )
+            if state is not DeduplicationState.NO_OP or location_metadata_changed:
                 pending.append(job)
             result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
         if pending and self._repository is not None:
@@ -189,6 +221,7 @@ class ATSPipeline:
             content_hash=content_hash,
             apply_url=apply_url,
             location=location,
+            location_source=raw.source,
             season=self._season,
             job_type=self._job_type,
             is_closed=closed,

@@ -46,6 +46,7 @@ class NormalizedJob(BaseModel):
     content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     apply_url: HttpUrl
     location: str = Field(min_length=1, max_length=500)
+    location_source: str | None = Field(default=None, max_length=100)
     season: int = Field(ge=2026, le=2027)
     job_type: JobType
     is_closed: bool = False

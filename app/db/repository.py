@@ -37,6 +37,7 @@ from app.services.hasher import (
     choose_canonical_apply_url,
     generate_content_hash,
 )
+from app.services.location_reconciliation import reconcile_location
 
 logger = logging.getLogger(__name__)
 
@@ -182,38 +183,51 @@ class DatabaseRepository:
                     normalized_job.location,
                     normalized_job.is_closed,
                 )
+            effective_job = normalized_job.model_copy(
+                update={"apply_url": apply_url, "content_hash": content_hash}
+            )
+            effective_job = reconcile_location(
+                effective_job,
+                existing_location=existing.location if existing is not None else None,
+                existing_source=existing.location_source if existing is not None else None,
+            )
             values = {
                 "company_id": company_id,
-                "title": normalized_job.title,
-                "content_hash": content_hash,
+                "title": effective_job.title,
+                "content_hash": effective_job.content_hash,
                 "apply_url": apply_url,
-                "location": normalized_job.location,
-                "season": normalized_job.season,
-                "job_type": JobType(normalized_job.job_type),
-                "is_closed": normalized_job.is_closed,
+                "location": effective_job.location,
+                "location_source": effective_job.location_source,
+                "season": effective_job.season,
+                "job_type": JobType(effective_job.job_type),
+                "is_closed": effective_job.is_closed,
             }
             was_created = existing is None
             changed = False
             if was_created:
                 existing = JobPosting(base_hash=normalized_job.base_hash, **values)
-                existing.posted_at = normalized_job.posted_at
-                if normalized_job.created_at is not None:
-                    existing.created_at = normalized_job.created_at
-                if normalized_job.updated_at is not None:
-                    existing.updated_at = normalized_job.updated_at
+                existing.posted_at = effective_job.posted_at
+                if effective_job.created_at is not None:
+                    existing.created_at = effective_job.created_at
+                if effective_job.updated_at is not None:
+                    existing.updated_at = effective_job.updated_at
                 self._session.add(existing)
             else:
-                changed = any(getattr(existing, key) != value for key, value in values.items())
+                changed = any(
+                    getattr(existing, key) != value
+                    for key, value in values.items()
+                    if key != "location_source"
+                )
                 for key, value in values.items():
                     setattr(existing, key, value)
-                if normalized_job.posted_at is not None:
+                if effective_job.posted_at is not None:
                     current_posted_at = existing.posted_at
                     if current_posted_at is not None and current_posted_at.tzinfo is None:
                         current_posted_at = current_posted_at.replace(tzinfo=UTC)
-                    if current_posted_at is None or normalized_job.posted_at < current_posted_at:
-                        existing.posted_at = normalized_job.posted_at
+                    if current_posted_at is None or effective_job.posted_at < current_posted_at:
+                        existing.posted_at = effective_job.posted_at
                 if changed:
-                    existing.updated_at = normalized_job.updated_at or datetime.now(UTC)
+                    existing.updated_at = effective_job.updated_at or datetime.now(UTC)
             await self._session.flush()
             if was_created and not existing.is_closed:
                 await self._record_discovery(existing.id)
@@ -692,6 +706,7 @@ class DatabaseRepository:
                     "content_hash": posting.content_hash,
                     "apply_url": posting.apply_url,
                     "location": posting.location,
+                    "location_source": posting.location_source,
                     "season": posting.season,
                     "job_type": posting.job_type,
                     "is_closed": posting.is_closed,
@@ -721,20 +736,30 @@ class DatabaseRepository:
                         job.location,
                         job.is_closed,
                     )
+                effective_job = reconcile_location(
+                    job.model_copy(update={"apply_url": apply_url, "content_hash": content_hash}),
+                    existing_location=str(old["location"]) if old is not None else None,
+                    existing_source=(
+                        str(old["location_source"])
+                        if old is not None and old["location_source"] is not None
+                        else None
+                    ),
+                )
                 values.append(
                     {
                         "company_id": company_id,
-                        "title": job.title,
+                        "title": effective_job.title,
                         "base_hash": job.base_hash,
-                        "content_hash": content_hash,
+                        "content_hash": effective_job.content_hash,
                         "apply_url": apply_url,
-                        "location": job.location,
-                        "season": job.season,
-                        "job_type": JobType(job.job_type),
-                        "is_closed": job.is_closed,
-                        "posted_at": job.posted_at,
-                        "created_at": job.created_at or now,
-                        "updated_at": job.updated_at or now,
+                        "location": effective_job.location,
+                        "location_source": effective_job.location_source,
+                        "season": effective_job.season,
+                        "job_type": JobType(effective_job.job_type),
+                        "is_closed": effective_job.is_closed,
+                        "posted_at": effective_job.posted_at,
+                        "created_at": effective_job.created_at or now,
+                        "updated_at": effective_job.updated_at or now,
                     }
                 )
 
@@ -758,6 +783,7 @@ class DatabaseRepository:
                     "content_hash": excluded.content_hash,
                     "apply_url": excluded.apply_url,
                     "location": excluded.location,
+                    "location_source": excluded.location_source,
                     "season": excluded.season,
                     "job_type": excluded.job_type,
                     "is_closed": excluded.is_closed,
@@ -791,7 +817,7 @@ class DatabaseRepository:
                 if was_created and not posting.is_closed:
                     await self._record_discovery(posting.id)
                 was_changed = old is not None and any(
-                    old[key] != getattr(posting, key) for key in old
+                    old[key] != getattr(posting, key) for key in old if key != "location_source"
                 )
                 if self._publisher is not None and (was_created or was_changed):
                     self._queue_job_event(posting, was_created=was_created)

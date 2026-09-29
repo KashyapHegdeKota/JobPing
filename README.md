@@ -190,6 +190,19 @@ independently under the `applyguy.ai` interval, so one feed failure does not sto
 Temporary disappearance from ApplyGuy is not treated as closure; only explicit closed state
 from a source can close a posting.
 
+Location reconciliation
+
+Each posting stores the source that supplied its current meaningful location. Greenhouse,
+Lever, Workday, Amazon, and Meta observations have the highest authority, Simplify is next,
+and ApplyGuy is lower. A source may correct its own previous value; when different recognized
+sources at the same tier disagree, a stable source-name tie-break prevents polling order from
+causing location ping-pong. Unknown sources do not implicitly outrank recognized sources,
+and empty or `Unspecified` locations cannot erase a meaningful location. Distinct cities are
+preserved, and no fuzzy location matching is used. The effective location is selected before
+Redis classification during database-backed ingestion so its content hash agrees with the
+persisted posting. Run `poetry run alembic upgrade head` before using the updated ingestion
+code. Standalone runs without a database have no persisted provenance to reconcile against.
+
 ## Start PostgreSQL and Redis
 
 After creating `.env`, start both services in the background:

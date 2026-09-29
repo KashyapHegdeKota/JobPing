@@ -221,3 +221,30 @@ async def test_location_formatting_is_stable_but_material_change_updates(
             ).run()
             assert result.outcomes[0].state is expected
             await scraper.aclose()
+
+
+@pytest.mark.asyncio
+async def test_noop_saves_stronger_location_provenance_before_later_conflict(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    dedupe = MemoryDeduplicator()
+    observations = [
+        ("applyguy_internships", "Remote", DeduplicationState.NEW_ROLE),
+        ("greenhouse", "Remote", DeduplicationState.NO_OP),
+        ("applyguy_internships", "Austin, TX", DeduplicationState.NO_OP),
+    ]
+    async with sessions() as session:
+        for source, location, expected in observations:
+            scraper = FakeScraper(source, "Acme", [row(source=source, location=location)])
+            try:
+                result = await ATSPipeline(
+                    [scraper], dedupe, session, season=2027, job_type=JobType.INTERNSHIP
+                ).run()
+                assert result.outcomes[0].state is expected
+            finally:
+                await scraper.aclose()
+                await scraper._client.aclose()
+        posting = (await session.scalars(select(JobPosting))).one()
+        assert posting.location == "Remote"
+        assert posting.location_source == "greenhouse"
+        assert posting.content_hash == dedupe.values[posting.base_hash]
