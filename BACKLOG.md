@@ -6,7 +6,7 @@
 
 ## In Progress
 
-No backlog items are currently in progress.
+No implementation items in progress.
 
 ## Ready
 
@@ -40,6 +40,15 @@ No blocked backlog items.
 ## Deferred / Technical Debt
 
 ## Recently Completed
+
+### ANALYTICS-001 Site totals and private user activity
+
+- Status: completed
+- Added Firebase-authenticated activity/filter/click tracking, replay-safe events and a personal dashboard scoped to the caller; raw search text and full URLs are excluded.
+- Added verified-admin aggregate site analytics for active signed-in users, unique/open jobs, reposts, subscribers and provider-accepted/confirmed email deliveries. Server-only `ANALYTICS_ADMIN_UIDS` defaults to denying admin access.
+- Generated migration `0008_analytics`; SQLite and isolated PostgreSQL upgrade/downgrade/re-upgrade passed. Existing job/email totals are available immediately; activity starts with the updated UI.
+- Validation: full default backend suite passed (687 tests), the additional migration test passed, all five PostgreSQL/Redis service tests and all 16 controlled browser tests passed; Ruff, Black and dependency-lock checks passed.
+- UI validation: 47 tests, lint, type checking and production build passed. Live Firebase sign-in and deployed dashboard verification remain an operator rollout check.
 
 ### TEST-CI-003 Repair PR integration with master
 
