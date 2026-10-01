@@ -9,9 +9,13 @@ The backend runs on your VM; Render is not required.
 
 1. Install dependencies with `poetry install` and apply `poetry run alembic upgrade head`
    against the production PostgreSQL database during your deployment window.
-   Migration `0004_notifications` creates only notification tables. Existing jobs
-   are not backfilled. Both single and bulk ingestion create durable events in their
-   own SQL transaction, regardless of Redis publisher configuration.
+   Migration `0004_notifications` creates notification tables. Migration
+   `0006_reposted_job_lifecycle` adds occurrence history and source observations. It
+   backfills one silent `discovered` occurrence per existing logical posting using the
+   posting's stored dates and URL; it does not enqueue new historical email events.
+   Existing pending events, matches and delivery references are carried forward to that
+   occurrence. Both single and bulk ingestion create durable events in their own SQL
+   transaction, regardless of Redis publisher configuration.
 2. Own and verify a sending domain in Resend. For `no-reply@jobping.com`, verify
    `jobping.com` and add the DNS records Resend supplies (SPF/DKIM; configure DMARC
    according to your domain policy). A mailbox or your own SMTP service is not
@@ -72,6 +76,45 @@ Bootstrap imports must explicitly set `NOTIFICATIONS_SUPPRESS_DISCOVERY=true` in
 the scraper process, then remove it for normal polling. The repository also accepts
 `suppress_notifications=True` for programmatic bootstrap calls. Sending disabled is
 different: it still records discoveries and queues mail for later review/delivery.
+
+## Reposted jobs
+
+JobPing keeps one logical posting for its existing company/title identity and records
+each first discovery or confirmed repost as a separate occurrence. An occurrence keeps
+the apply URL, posted/observed dates and source identity used for that appearance. The
+occurrence event is the durable notification identity, so a repost can match and alert
+the same subscriber again while application attempts and answers remain attached to the
+logical posting.
+
+Only explicit closure evidence closes an occurrence. A source omitting a row, deleting a
+feed entry or changing a Simplify commit/path does not close a job. A repost must be open
+after a confirmed closure and meet one of these checks:
+
+- A stable ATS requisition ID changed within the same provider and tenant namespace. If
+  both posted dates are known, the new one must be later.
+- For direct ATS observations without comparable stable IDs, a trustworthy newer posted
+  date and a materially changed canonical application URL are both required.
+
+ApplyGuy feed IDs and Simplify commit/path IDs are source provenance, not requisition
+identity. A direct ATS URL embedded in an aggregator record can provide stable identity,
+so aggregator-first discovery and later ATS confirmation coalesce into the same open
+occurrence. The same ATS ID reopening, a different ATS provider/tenant ID by itself, and
+aggregator URL churn do not establish a repost. Backfilled historical closed postings
+have no fabricated source identity: a later URL difference alone cannot label them as
+reposted.
+
+An ambiguous weak open observation cannot clear a confirmed closure. The posting and its
+latest occurrence stay closed until a comparable ATS identity proves a same-occurrence
+reactivation or stronger evidence proves a new repost. The observation's raw URL and
+posted date remain attached as provenance, while Redis is refreshed with the effective
+closed SQL state. Later authoritative ATS evidence is therefore evaluated against the
+durable closed occurrence.
+
+Individual repost alerts say “Reposted” in the subject, HTML and text. Daily recaps keep
+new and reposted roles in separate counted sections. Each delivery freezes occurrence
+IDs and the occurrence URL/date snapshot, and the recap API returns those same occurrence
+rows and counts. Pending alerts tied to an occurrence that closes before sending are
+cancelled even if a later repost has reopened the shared logical posting.
 
 ## Preferences and free-tier budget
 

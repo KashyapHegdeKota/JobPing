@@ -66,7 +66,7 @@ def test_normalized_job_rejects_invalid_values(field: str, value: object) -> Non
 
 def test_normalized_job_forbids_unknown_fields() -> None:
     values = normalized_values()
-    values["source"] = "greenhouse"
+    values["unknown"] = "forbidden"
 
     with pytest.raises(ValidationError):
         NormalizedJob.model_validate(values)

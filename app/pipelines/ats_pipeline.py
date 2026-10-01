@@ -21,6 +21,12 @@ from app.services.hasher import (
 )
 from app.services.location_reconciliation import reconcile_location
 from app.services.posting_dates import parse_source_posted_at
+from app.services.repost_classifier import (
+    OccurrenceDecision,
+    decide_occurrence,
+    prepare_candidate,
+)
+from app.services.source_identity import stable_posting_identity
 
 
 class Deduplicator(Protocol):
@@ -33,7 +39,13 @@ class Deduplicator(Protocol):
 
 @dataclass(frozen=True, slots=True)
 class ATSOutcome:
-    """One successfully classified ATS row."""
+    """One ATS row's SQL-authoritative lifecycle result.
+
+    ``NEW_ROLE`` creates the first discovery, ``ROLE_UPDATED`` changes an existing
+    role without a repost, ``ROLE_CLOSED`` closes the active occurrence,
+    ``ROLE_REPOSTED`` creates a repost occurrence, and ``NO_OP`` makes no
+    authoritative lifecycle transition.
+    """
 
     source: str
     source_id: str | None
@@ -176,11 +188,29 @@ class ATSPipeline:
             if self._repository is not None
             else {}
         )
+        occurrence_evidence = (
+            await self._repository.get_current_occurrence_evidence(
+                [job.base_hash for _, job in candidates]
+            )
+            if self._repository is not None
+            else {}
+        )
         pending: list[NormalizedJob] = []
+        staged: list[tuple[RawJobPayload, DeduplicationState, NormalizedJob]] = []
         for raw, candidate in candidates:
             existing = existing_by_hash.get(candidate.base_hash)
+            evidence = occurrence_evidence.get(candidate.base_hash)
+            decision = decide_occurrence(
+                candidate,
+                source=raw.source,
+                existing=existing,
+                evidence=evidence,
+            )
+            effective_candidate = prepare_candidate(candidate, decision, existing=existing)
+            reposted = decision is OccurrenceDecision.REPOST
             job = self._reconcile_persisted_url(
-                candidate, existing.apply_url if existing is not None else None
+                effective_candidate,
+                None if reposted or existing is None else existing.apply_url,
             )
             job = reconcile_location(
                 job,
@@ -192,14 +222,35 @@ class ATSPipeline:
                 content_hash=job.content_hash,
                 is_closed=job.is_closed,
             )
-            location_metadata_changed = existing is not None and (
-                existing.location != job.location or existing.location_source != job.location_source
-            )
-            if state is not DeduplicationState.NO_OP or location_metadata_changed:
-                pending.append(job)
-            result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
+            # Persist the source observation so locked SQL state can resolve
+            # lifecycle and location authority, even behind a warm Redis cache.
+            pending.append(candidate)
+            staged.append((raw, state, job))
         if pending and self._repository is not None:
-            await self._repository.bulk_upsert_job_postings(pending)
+            persisted = await self._repository.bulk_upsert_job_postings_with_outcomes(pending)
+            for (raw, _, job), persisted_result in zip(staged, persisted, strict=True):
+                posting = persisted_result.posting
+                await self._deduplicator.classify_and_update(
+                    base_hash=posting.base_hash,
+                    content_hash=posting.content_hash,
+                    is_closed=posting.is_closed,
+                )
+                job = job.model_copy(
+                    update={
+                        "occurrence_kind": (
+                            "reposted"
+                            if persisted_result.state is DeduplicationState.ROLE_REPOSTED
+                            else None
+                        )
+                    }
+                )
+                result.outcomes.append(
+                    ATSOutcome(raw.source, raw.source_id, persisted_result.state, job)
+                )
+        else:
+            result.outcomes.extend(
+                ATSOutcome(raw.source, raw.source_id, state, job) for raw, state, job in staged
+            )
 
     def _normalize(self, raw: RawJobPayload) -> NormalizedJob:
         company = (raw.company or "").strip()
@@ -214,6 +265,12 @@ class ATSPipeline:
             raw.payload.get("posted", raw.payload.get("date_posted")),
             observed_at=observed_at,
         )
+        identity = stable_posting_identity(
+            source=raw.source,
+            source_id=raw.source_id,
+            apply_url=apply_url,
+            payload=raw.payload,
+        )
         return NormalizedJob(
             company_name=company,
             title=title,
@@ -226,6 +283,11 @@ class ATSPipeline:
             job_type=self._job_type,
             is_closed=closed,
             posted_at=posted_at,
+            observed_at=observed_at,
+            source=raw.source,
+            source_id=raw.source_id,
+            identity_namespace=identity[0] if identity else None,
+            external_job_id=identity[1] if identity else None,
         )
 
     @staticmethod

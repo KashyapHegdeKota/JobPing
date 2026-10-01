@@ -128,7 +128,9 @@ async def test_patch_lifecycle_classifies_and_persists_every_state(
         "add": commit("add", unified_diff(f"+{initial}")),
         "same": commit("same", unified_diff(f"+{initial}")),
         "update": commit("update", unified_diff(f"-{initial}", f"+{relocated}")),
-        "close": commit("close", unified_diff(f"-{relocated}")),
+        # A removed feed row is absence, not closure; the retained row carries an
+        # explicit standalone status so the pipeline can safely close the posting.
+        "close": commit("close", unified_diff(f"+{relocated} | Closed")),
     }
     redis = InMemoryRedis()
     deduplicator = JobDeduplicator(cast(Any, cast(Redis, redis)), ttl_seconds=3600)
