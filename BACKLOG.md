@@ -6,15 +6,32 @@
 
 ## In Progress
 
-### TEST-CI-001 Application boundary and CI overhaul
-
-- Status: in progress
-- Area: automated tests / CI
-- Scope: queue/state/checkpoint/answer/MCP contracts, durable restart and discovery integration, controlled browser fixtures, PostgreSQL/Redis service tests, cross-platform CI and reporting.
-- Delivery: 15–20 focused commits on `test/ci-overhaul`; preserve unrelated local changes.
-- Limits: real employer dry runs and Codex Chrome behavior require a manual release gate; fixture browser tests exercise controlled pages only.
+No backlog items are currently in progress.
 
 ## Ready
+
+### APP-SAFETY-001 Enforce review and submission evidence
+
+- Require persisted required-field/review completion, explicit authorization and independently reported browser confirmation before submitted.
+- Add structured non-sensitive execution evidence, upload receipts and failed/unknown submission reconciliation.
+- Current tools trust caller reports; ready/submitted state tests do not prove these missing gates.
+
+### APP-CONCURRENCY-001 Define claims and replay protection
+
+- Add worker leases/atomic claiming; unique attempt rows alone do not prevent double browser ownership.
+- Define versioned checkpoint ordering and request idempotency; stage regression currently succeeds and status self transitions reject.
+- Decide answer-save replay semantics while preserving append-only audit history.
+
+### APP-REPOST-001 Define per-occurrence application policy
+
+- Current schema permits one attempt per logical job and preserves it across close/reopen.
+- Define occurrence/history storage and eligibility before permitting a second application to a repost.
+
+### APP-BROWSER-001 Validate the external browser agent before release
+
+- Run a real Greenhouse dry run stopping at ready, then at least five heterogeneous forms.
+- Validate unknown answers, uploads, user verification/CAPTCHA, browser restart and an explicitly authorized confirmation.
+- Controlled fixtures exercise a deterministic test driver, not Codex Chrome perception; follow `docs/testing.md` for the evidence requirements.
 
 ## Blocked
 
@@ -23,6 +40,29 @@ No blocked backlog items.
 ## Deferred / Technical Debt
 
 ## Recently Completed
+
+### TEST-CI-001 Application boundary and CI overhaul
+
+- Status: completed
+- Delivery: 22 focused commits on `test/ci-overhaul`, including two defects caught by real-service testing; unrelated local example changes preserved.
+- Coverage: 223 added cases across queue, all lifecycle/status-stage pairs, answer/candidate/MCP contracts, durable restart, rollback/reset, duplicate discovery and controlled Chromium workflows.
+- CI: Linux Python 3.12/3.13/3.14, Windows 3.12/3.14, controlled browser and PostgreSQL/Redis/MCP acceptance jobs, strict pytest configuration, 80% branch-inclusive coverage floor, JUnit/XML/HTML artifacts.
+- Validation: full suites pass (`649 passed, 20 opt-in skips`); Chromium/applicant suite passes (`23 passed`); all four real-service tests pass on Linux and Windows with a compatible test loop; Ruff, Black and lock checks pass. Latest Linux coverage is 82.30%.
+- Environment: Docker Desktop startup failed; disposable native PostgreSQL/Redis processes in Ubuntu supplied real-service validation and were stopped afterward.
+- Remaining: remote GitHub Actions execution and branch-protection settings require branch publication/repository configuration. Product gaps and real-agent release checks are tracked above and in `docs/testing.md`.
+
+### DB-MIGRATION-001 Clean PostgreSQL enum on initial downgrade
+
+- Status: completed
+- Discovery: the new real-service round trip failed on the second upgrade because `job_type` survived downgrade to base.
+- Fix: drop the PostgreSQL enum after its table; keep SQLite behavior intact.
+- Validation: isolated PostgreSQL upgrade/downgrade/re-upgrade and SQLite migration regressions pass.
+
+### MCP-WINDOWS-001 PostgreSQL stdio event-loop compatibility
+
+- Status: completed
+- Fix: the standalone Windows stdio entry point owns a Selector `asyncio.Runner`; Linux retains the official SDK runner.
+- Validation: Windows official stdio lifecycle/restart tests and real PostgreSQL/Redis/MCP acceptance pass; Linux service acceptance also passes.
 
 ### INGEST-IDENTITY-002 Cross-source location reconciliation
 

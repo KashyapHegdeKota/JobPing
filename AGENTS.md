@@ -135,6 +135,8 @@ using injected HTTP transports; no live keys or developer database mutation.
 Close every owned `httpx.AsyncClient`, Redis client, SQLAlchemy engine, Playwright page/context/browser, and background listener deterministically (`async with` or `finally`). Do not close injected resources. HTTP clients should use explicit timeouts and `follow_redirects=True` where redirects are expected. Never swallow JSON/Pydantic mapping errors; log useful source context without payload secrets.
 
 On Windows, CLI async entry points use `app.cli._asyncio_run`, which selects a `SelectorEventLoop` for psycopg compatibility. Avoid module-level async clients or resources bound to a prior `asyncio.run()` loop; construct and close them inside the active async lifecycle. Console output must tolerate legacy encodings.
+The standalone MCP stdio entry point also uses an owned `asyncio.Runner` with a
+Selector loop on Windows, so PostgreSQL-backed tools use the same driver contract.
 
 ## Configuration and commands
 
@@ -157,6 +159,14 @@ poetry run pytest
 ```
 
 Browser E2E tests are opt-in (`RUN_BROWSER_E2E=1`) and require a local Chromium installed with `poetry run playwright install chromium`. Unit/integration tests must mock external networks and use isolated Redis/SQL substitutes where practical.
+
+See `docs/testing.md` for the automated acceptance map and manual browser-agent release gate.
+CI enables controlled Chromium fixtures and isolated PostgreSQL/Redis acceptance;
+local service tests require `RUN_SERVICE_INTEGRATION=1` and dedicated
+`JOBPING_TEST_DATABASE_URL` / `JOBPING_TEST_REDIS_URL` values. Service fixtures use
+UUID schemas/key namespaces and must never mutate the normal development services.
+Browser fixture filling/clicking is test-only and does not authorize production
+application Playwright automation or a live employer submission.
 
 ## Change and commit discipline
 
