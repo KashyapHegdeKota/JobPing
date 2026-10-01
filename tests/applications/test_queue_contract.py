@@ -51,7 +51,7 @@ async def test_closed_job_and_missing_job_cannot_start_or_queue(
         assert await server.jobs_get_next() is None
         for job_id, message in ((posting.id, "closed"), (9999, "not found")):
             with pytest.raises(ValueError, match=message):
-                await server.application_start(job_id, application_job.apply_url)
+                await server.application_start(job_id, str(application_job.apply_url))
         assert await session.scalar(select(func.count()).select_from(ApplicationAttempt)) == 0
 
 
