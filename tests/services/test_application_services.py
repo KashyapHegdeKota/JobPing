@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
@@ -138,7 +139,8 @@ async def test_postgres_discovery_to_ready_survives_restart(
         server = JobPingMCPServer(DatabaseRepository(fresh))
         checkpoint = await server.application_get_checkpoint(job_id)
         assert checkpoint["status"] == "ready_to_submit" and checkpoint["submitted_at"] is None
-        assert checkpoint["attempt_count"] == 1 and checkpoint["started_at"].endswith("Z")
+        assert checkpoint["attempt_count"] == 1
+        assert datetime.fromisoformat(checkpoint["started_at"]).utcoffset() is not None
         assert await fresh.scalar(select(func.count()).select_from(ApplicationAttempt)) == 1
         assert await fresh.scalar(select(func.count()).select_from(DiscoveryEvent)) == 1
 
@@ -159,6 +161,7 @@ async def test_postgres_migrations_round_trip_isolated_schema(
     await asyncio.to_thread(command.downgrade, config, "base")
     async with postgres_engine.connect() as connection:
         assert await connection.scalar(text("SELECT to_regclass('application_attempts')")) is None
+        assert await connection.scalar(text("SELECT to_regtype('job_type')")) is None
     await asyncio.to_thread(command.upgrade, config, "head")
 
 
