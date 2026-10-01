@@ -25,6 +25,25 @@ class Base(DeclarativeBase):
     """Declarative base shared by all JobPing ORM models."""
 
 
+class AnalyticsEvent(Base):
+    """Bounded first-party activity attributed only to a verified server identity."""
+
+    __tablename__ = "analytics_events"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    page: Mapped[str] = mapped_column(String(32), nullable=False)
+    filters: Mapped[dict | None] = mapped_column(JSON)
+    job_id: Mapped[int | None] = mapped_column(ForeignKey("job_postings.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    __table_args__ = (
+        Index("ix_analytics_user_created", "user_id", "created_at"),
+        Index("ix_analytics_created_kind", "created_at", "kind"),
+    )
+
+
 class JobType(StrEnum):
     """Job categories supported by the discovery engine."""
 
