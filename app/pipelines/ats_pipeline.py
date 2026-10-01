@@ -222,12 +222,10 @@ class ATSPipeline:
                 content_hash=job.content_hash,
                 is_closed=job.is_closed,
             )
-            location_metadata_changed = existing is not None and (
-                existing.location != job.location or existing.location_source != job.location_source
-            )
-            if state is not DeduplicationState.NO_OP or location_metadata_changed:
-                pending.append(job)
-            result.outcomes.append(ATSOutcome(raw.source, raw.source_id, state, job))
+            # Persist the source observation so locked SQL state can resolve
+            # lifecycle and location authority, even behind a warm Redis cache.
+            pending.append(candidate)
+            staged.append((raw, state, job))
         if pending and self._repository is not None:
             persisted = await self._repository.bulk_upsert_job_postings_with_outcomes(pending)
             for (raw, _, job), persisted_result in zip(staged, persisted, strict=True):

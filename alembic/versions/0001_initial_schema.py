@@ -103,3 +103,6 @@ def downgrade() -> None:
     op.drop_index("ix_job_postings_company_id", table_name="job_postings")
     op.drop_table("job_postings")
     op.drop_table("companies")
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        sa.Enum(name="job_type").drop(bind, checkfirst=True)

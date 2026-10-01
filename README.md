@@ -425,6 +425,10 @@ poetry run pytest tests/unit/test_trackers.py
 
 ## Troubleshooting
 
+See [automated testing and release evidence](docs/testing.md) for the application
+acceptance suites, controlled Chromium fixtures, isolated PostgreSQL/Redis tests,
+CI matrix, coverage reports, and remaining browser-agent release gates.
+
 - **Compose reports blank PostgreSQL variables:** create `.env` from `.env.example` before
   running `docker compose up`.
 - **Port 5432 or 6379 is already allocated:** stop the conflicting local service or change the

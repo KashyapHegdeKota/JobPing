@@ -6,6 +6,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .poetry-cache/
+.pytest-tmp/
+.tmp-ci-*/
 
 # Virtual environments
 .venv/
@@ -21,6 +23,7 @@ dist/
 .coverage
 coverage.xml
 htmlcov/
+test-results/
 
 # Local configuration and secrets
 .env

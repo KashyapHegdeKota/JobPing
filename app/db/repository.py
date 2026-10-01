@@ -42,6 +42,12 @@ from app.services.hasher import (
     generate_content_hash,
 )
 from app.services.location_reconciliation import reconcile_location
+from app.services.repost_classifier import (
+    decide_occurrence,
+    is_same_repost_occurrence,
+    prepare_candidate,
+)
+from app.services.source_identity import stable_posting_identity
 
 logger = logging.getLogger(__name__)
 

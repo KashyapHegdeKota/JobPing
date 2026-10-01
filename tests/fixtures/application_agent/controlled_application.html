@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>JobPing controlled application</title></head>
+<body>
+<main>
+  <form id="application">
+    <label for="first_name">First name *</label><input id="first_name" name="first_name" required>
+    <label for="last_name">Last name *</label><input id="last_name" name="last_name" required>
+    <label for="email">Email *</label><input id="email" name="email" type="email" required>
+    <label for="phone">Phone</label><input id="phone" name="phone" type="tel">
+    <label for="resume">Resume *</label><input id="resume" name="resume" type="file" accept="application/pdf" required>
+    <output id="attachment" aria-live="polite"></output>
+    <label for="authorization">Work authorization *</label>
+    <select id="authorization" name="authorization" required><option value="">Choose</option><option value="yes">Yes</option><option value="no">No</option></select>
+    <fieldset><legend>Require sponsorship? *</legend>
+      <label><input type="radio" name="sponsorship" value="yes" required>Yes</label>
+      <label><input type="radio" name="sponsorship" value="no" required>No</label>
+    </fieldset>
+    <label for="skills">Skills</label><select id="skills" name="skills" multiple><option value="python">Python</option><option value="sql">SQL</option><option value="rust">Rust</option></select>
+    <label for="why_role">Why this role?</label><textarea id="why_role" name="why_role"></textarea>
+    <label for="compensation">Expected compensation?</label><input id="compensation" name="compensation">
+    <label><input id="acknowledge" name="acknowledge" type="checkbox" required>I reviewed these answers</label>
+    <input name="tracking" type="hidden" value="synthetic">
+    <input name="aria_hidden" aria-hidden="true" value="synthetic">
+    <button type="submit">Submit application</button>
+  </form>
+  <section id="verification" hidden><h2>Verify your email</h2><p>Complete the challenge yourself.</p></section>
+  <section id="captcha" hidden><h2>CAPTCHA requires user intervention</h2></section>
+  <p id="error" role="alert"></p>
+  <section id="confirmation" hidden><h2>Thank you for applying</h2></section>
+</main>
+<script>
+// Test-only fixture state; this does not call an employer or implement an agent.
+window.fixture = {mode: 'success', clicks: 0, submissions: 0, uploadAccepted: false};
+const file = document.querySelector('#resume');
+file.addEventListener('change', () => {
+  const selected = file.files[0];
+  const accepted = selected && selected.type === 'application/pdf' && selected.size > 0 && selected.size <= 1048576;
+  window.fixture.uploadAccepted = !!accepted;
+  file.setCustomValidity(accepted ? '' : 'Choose a nonempty PDF under 1 MB');
+  document.querySelector('#attachment').textContent = accepted ? `Attached: ${selected.name}` : 'Attachment rejected';
+});
+document.querySelector('button').addEventListener('click', () => window.fixture.clicks++);
+document.querySelector('form').addEventListener('submit', event => {
+  event.preventDefault();
+  window.fixture.submissions++;
+  if (window.fixture.mode === 'validation') {
+    document.querySelector('#error').textContent = 'Please complete required field X';
+  } else if (window.fixture.mode === 'network') {
+    document.querySelector('#error').textContent = 'Connection failed. Submission unconfirmed.';
+  } else if (window.fixture.mode === 'unknown') {
+    document.querySelector('#error').textContent = 'Submission pending. Confirmation unavailable.';
+  } else {
+    document.querySelector('#confirmation').hidden = false;
+    document.querySelector('form').hidden = true;
+  }
+});
+</script>
+</body></html>
