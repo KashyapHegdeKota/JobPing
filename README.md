@@ -1,6 +1,29 @@
 # JobPing
 
-## Email notifications
+## Analytics
+
+Signed-in users can view their own activity, filter usage, matching occurrences and
+email counts at `/activity`. Admins get aggregate site totals at `/admin/analytics`:
+active signed-in users over 24 hours/7 days/30 days, unique jobs, open jobs, reposts,
+subscribers and email delivery counts. Set server-side `ANALYTICS_ADMIN_UIDS` to a
+comma-separated list of verified Firebase user IDs, then restart the API. An empty
+list denies admin access. No admin secrets or allowlist belong in the UI.
+
+Apply `poetry run alembic upgrade head` (`0008_analytics`) before using the feature.
+Activity starts when the updated UI is deployed; existing job/email totals come from
+the durable database. Counts cover signed-in activity, not anonymous visitors or all
+accounts registered in Firebase. Daily activity uses UTC. “Sent” counts unique
+deliveries with provider acceptance IDs, not retries; confirmed delivery relies on
+webhooks. Clicking a job link does not prove submission.
+
+Tracking records allowed page names, category/remote/date/company filter settings,
+whether search was used, and job IDs. Raw queries, URL query strings, email bodies,
+tokens, IP addresses and application answers are not stored. The personal API is
+scoped to the server-verified account; the site API contains aggregates only.
+Raw activity is retained until an operator deletes it; no third-party analytics
+service is involved. Recording failures never block browsing.
+
+## Email delivery setup
 
 Opt-in job alerts, 8 PM daily recaps, and optional encrypted Resend BYOK settings
 are available from the UI Profile page. Run `poetry run python -m app.cli notifications-worker`
