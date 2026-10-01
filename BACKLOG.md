@@ -41,6 +41,14 @@ No blocked backlog items.
 
 ## Recently Completed
 
+### TEST-CI-002 Complete Docker revalidation
+
+- Status: completed
+- Validation: all 669 automated tests passed together with zero failures, errors or skips on Docker Linux Python 3.12.14, with Chromium and isolated PostgreSQL 16/Redis 7 enabled; runtime 348.64 seconds and branch-inclusive coverage 82.78%.
+- Quality: full Ruff, Black and dependency-lock checks passed; unrelated example changes preserved.
+- Isolation: fixture schemas and Redis keys were verified empty after the run; dedicated test containers removed. Local JUnit, coverage and execution reports are under ignored `test-results/docker-retest/`.
+- CI: quality jobs skip opt-in groups, while dedicated browser/service jobs enable them; remote matrix execution remains pending branch publication.
+
 ### TEST-CI-001 Application boundary and CI overhaul
 
 - Status: completed
@@ -48,7 +56,7 @@ No blocked backlog items.
 - Coverage: 223 added cases across queue, all lifecycle/status-stage pairs, answer/candidate/MCP contracts, durable restart, rollback/reset, duplicate discovery and controlled Chromium workflows.
 - CI: Linux Python 3.12/3.13/3.14, Windows 3.12/3.14, controlled browser and PostgreSQL/Redis/MCP acceptance jobs, strict pytest configuration, 80% branch-inclusive coverage floor, JUnit/XML/HTML artifacts.
 - Validation: full suites pass (`649 passed, 20 opt-in skips`); Chromium/applicant suite passes (`23 passed`); all four real-service tests pass on Linux and Windows with a compatible test loop; Ruff, Black and lock checks pass. Latest Linux coverage is 82.30%.
-- Environment: Docker Desktop startup failed; disposable native PostgreSQL/Redis processes in Ubuntu supplied real-service validation and were stopped afterward.
+- Environment: initial Docker Desktop startup failure was worked around with disposable Ubuntu services; after the Windows restart, Docker validation passed all 669 cases with zero skips (TEST-CI-002).
 - Remaining: remote GitHub Actions execution and branch-protection settings require branch publication/repository configuration. Product gaps and real-agent release checks are tracked above and in `docs/testing.md`.
 
 ### DB-MIGRATION-001 Clean PostgreSQL enum on initial downgrade
