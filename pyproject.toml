@@ -11,7 +11,7 @@ dependencies = ["sqlalchemy (>=2.0,<3.0)", "alembic (>=1.16,<2.0)", "psycopg[bin
 packages = [{ include = "app" }]
 
 [dependency-groups]
-dev = ["black>=26.5.1,<27", "ruff>=0.12,<0.16", "pytest (>=8.4,<10)", "pytest-asyncio (>=1.1,<2)", "aiosqlite (>=0.21,<1.0)"]
+dev = ["black>=26.5.1,<27", "ruff>=0.12,<0.16", "pytest (>=8.4,<10)", "pytest-asyncio (>=1.1,<2)", "aiosqlite (>=0.21,<1.0)", "pytest-cov (>=6,<8)"]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
@@ -36,5 +36,18 @@ line-ending = "auto"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
 testpaths = ["tests"]
-markers = ["browser_e2e: requires RUN_BROWSER_E2E=1 and a locally installed Chromium binary"]
+markers = [
+    "browser_e2e: requires RUN_BROWSER_E2E=1 and a locally installed Chromium binary",
+    "service_integration: requires RUN_SERVICE_INTEGRATION=1 and isolated local PostgreSQL/Redis",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["app"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true

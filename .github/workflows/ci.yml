@@ -43,28 +43,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - name: Set up test environment
+        uses: ./.github/actions/setup-test-environment
         with:
           python-version: ${{ matrix.python }}
-          cache: pip
-
-      - name: Install Poetry
-        run: python -m pip install "poetry>=2.0,<3.0"
-
-      - name: Cache Poetry environment
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pypoetry
-          key: poetry-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('poetry.lock') }}
-          restore-keys: |
-            poetry-${{ runner.os }}-py${{ matrix.python }}-
-
-      - name: Install dependencies
-        run: poetry install --no-interaction
-
-      - name: Validate lock file
-        run: poetry check --lock
 
       - name: Run Ruff
         run: poetry run ruff check .
@@ -73,4 +55,90 @@ jobs:
         run: poetry run black --check .
 
       - name: Run tests
-        run: poetry run pytest -q --strict-markers --strict-config --basetemp=.pytest-tmp
+        run: >-
+          poetry run pytest -q --strict-markers --strict-config --basetemp=.pytest-tmp
+          --junitxml=test-results/quality.xml --cov=app --cov-branch
+          --cov-report=term-missing:skip-covered --cov-report=xml --cov-report=html
+
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quality-${{ matrix.os }}-py${{ matrix.python }}
+          path: |
+            test-results/
+            coverage.xml
+            htmlcov/
+          retention-days: 14
+
+  browser:
+    name: Controlled browser acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      RUN_BROWSER_E2E: "1"
+      NOTIFICATIONS_SEND_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-test-environment
+        with:
+          python-version: "3.12"
+      - name: Install controlled browser runtime
+        run: poetry run playwright install --with-deps chromium
+      - name: Run controlled browser acceptance tests
+        run: >-
+          poetry run pytest tests/e2e tests/applicants -m browser_e2e -q
+          --strict-markers --strict-config --basetemp=.pytest-tmp
+          --junitxml=test-results/browser.xml
+      - name: Upload browser test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-test-results
+          path: test-results/
+          retention-days: 14
+
+  services:
+    name: PostgreSQL Redis MCP acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: jobping
+          POSTGRES_PASSWORD: test-only-password
+          POSTGRES_DB: jobping_test_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jobping -d jobping_test_ci"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+    env:
+      RUN_SERVICE_INTEGRATION: "1"
+      JOBPING_TEST_DATABASE_URL: postgresql+psycopg://jobping:test-only-password@127.0.0.1:5432/jobping_test_ci
+      JOBPING_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+      NOTIFICATIONS_SEND_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-test-environment
+        with:
+          python-version: "3.12"
+      - name: Run isolated services and MCP acceptance tests
+        run: >-
+          poetry run pytest tests/services -q --strict-markers --strict-config
+          --basetemp=.pytest-tmp --junitxml=test-results/services.xml
+      - name: Upload service test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: service-test-results
+          path: test-results/
+          retention-days: 14
