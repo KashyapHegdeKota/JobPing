@@ -6,7 +6,13 @@
 
 ## In Progress
 
-No backlog items are currently in progress.
+### TEST-CI-001 Application boundary and CI overhaul
+
+- Status: in progress
+- Area: automated tests / CI
+- Scope: queue/state/checkpoint/answer/MCP contracts, durable restart and discovery integration, controlled browser fixtures, PostgreSQL/Redis service tests, cross-platform CI and reporting.
+- Delivery: 15–20 focused commits on `test/ci-overhaul`; preserve unrelated local changes.
+- Limits: real employer dry runs and Codex Chrome behavior require a manual release gate; fixture browser tests exercise controlled pages only.
 
 ## Ready
 
