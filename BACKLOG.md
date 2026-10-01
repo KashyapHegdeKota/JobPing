@@ -6,7 +6,10 @@
 
 ## In Progress
 
-No backlog items are currently in progress.
+### TEST-CI-003 Repair PR integration with master
+
+- Branch push checks pass, but the PR merge fails on missing repost classifier imports and divergent Alembic heads inherited from master.
+- Integrate current master, repair imports and migration graph, then validate the combined implementation and GitHub PR checks.
 
 ## Ready
 
