@@ -7,7 +7,9 @@ browser controls are intentionally absent from this transport.
 
 from __future__ import annotations
 
+import asyncio
 import os
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -326,7 +328,12 @@ def main() -> None:
         stories_path=configured("JOBPING_STORIES_PATH"),
         rules_path=configured("JOBPING_RULES_PATH"),
     )
-    mcp.run()
+    if sys.platform == "win32":
+        # psycopg requires a Selector loop; stdio itself uses AnyIO file streams.
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            runner.run(mcp.run_stdio_async())
+    else:
+        mcp.run()
 
 
 class JobPingMCPServer:
