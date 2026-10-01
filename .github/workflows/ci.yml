@@ -2,13 +2,12 @@ name: CI
 
 on:
   pull_request:
-    branches:
-      - main
-      - master
   push:
     branches:
       - main
       - master
+      - test/ci-overhaul
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -19,9 +18,26 @@ concurrency:
 
 jobs:
   quality:
-    name: Lint and test
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    name: Quality (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.12"
+          - os: ubuntu-latest
+            python: "3.13"
+          - os: ubuntu-latest
+            python: "3.14"
+          - os: windows-latest
+            python: "3.12"
+          - os: windows-latest
+            python: "3.14"
+    env:
+      PYTHONHASHSEED: "17"
+      NOTIFICATIONS_SEND_ENABLED: "false"
 
     steps:
       - name: Check out repository
@@ -30,7 +46,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
           cache: pip
 
       - name: Install Poetry
@@ -40,9 +56,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/pypoetry
-          key: poetry-${{ runner.os }}-py3.12-${{ hashFiles('poetry.lock') }}
+          key: poetry-${{ runner.os }}-py${{ matrix.python }}-${{ hashFiles('poetry.lock') }}
           restore-keys: |
-            poetry-${{ runner.os }}-py3.12-
+            poetry-${{ runner.os }}-py${{ matrix.python }}-
 
       - name: Install dependencies
         run: poetry install --no-interaction
@@ -57,4 +73,4 @@ jobs:
         run: poetry run black --check .
 
       - name: Run tests
-        run: poetry run pytest
+        run: poetry run pytest -q --strict-markers --strict-config --basetemp=.pytest-tmp
