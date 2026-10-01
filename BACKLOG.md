@@ -6,11 +6,7 @@
 
 ## In Progress
 
-### TEST-CI-003 Repair PR integration with master
-
-- Branch push checks pass, but the PR merge fails on missing repost classifier imports and divergent Alembic heads inherited from master.
-- Integrate current master, repair imports and migration graph, then validate the combined implementation and GitHub PR checks.
-- Local validation passed: 694 tests including controlled Chromium, four service opt-in skips, 84.12% branch-inclusive coverage; Ruff, Black and lock checks pass. GitHub PR validation pending.
+No backlog items are currently in progress.
 
 ## Ready
 
@@ -45,13 +41,21 @@ No blocked backlog items.
 
 ## Recently Completed
 
+### TEST-CI-003 Repair PR integration with master
+
+- Status: completed
+- Integrated current master; restored missing repost classifier imports and ATS result staging lost in the prior location/lifecycle integration.
+- Generated `0007_merge_location_repost` to join both existing schema branches without rewriting deployed revisions; added upgrade regressions from each branch.
+- Local validation: 694 tests including controlled Chromium passed, four service opt-in skips, 84.12% branch-inclusive coverage; Ruff, Black and lock checks pass.
+- GitHub validation: all seven PR jobs and all seven push jobs passed for `038c358`, including real PostgreSQL/Redis/MCP and controlled browser acceptance (PR run `36938227512`).
+
 ### TEST-CI-002 Complete Docker revalidation
 
 - Status: completed
 - Validation: all 669 automated tests passed together with zero failures, errors or skips on Docker Linux Python 3.12.14, with Chromium and isolated PostgreSQL 16/Redis 7 enabled; runtime 348.64 seconds and branch-inclusive coverage 82.78%.
 - Quality: full Ruff, Black and dependency-lock checks passed; unrelated example changes preserved.
 - Isolation: fixture schemas and Redis keys were verified empty after the run; dedicated test containers removed. Local JUnit, coverage and execution reports are under ignored `test-results/docker-retest/`.
-- CI: quality jobs skip opt-in groups, while dedicated browser/service jobs enable them; remote matrix execution remains pending branch publication.
+- CI: quality jobs skip opt-in groups, while dedicated browser/service jobs enable them; the published branch and integrated PR matrix passed (TEST-CI-003).
 
 ### TEST-CI-001 Application boundary and CI overhaul
 
@@ -61,7 +65,7 @@ No blocked backlog items.
 - CI: Linux Python 3.12/3.13/3.14, Windows 3.12/3.14, controlled browser and PostgreSQL/Redis/MCP acceptance jobs, strict pytest configuration, 80% branch-inclusive coverage floor, JUnit/XML/HTML artifacts.
 - Validation: full suites pass (`649 passed, 20 opt-in skips`); Chromium/applicant suite passes (`23 passed`); all four real-service tests pass on Linux and Windows with a compatible test loop; Ruff, Black and lock checks pass. Latest Linux coverage is 82.30%.
 - Environment: initial Docker Desktop startup failure was worked around with disposable Ubuntu services; after the Windows restart, Docker validation passed all 669 cases with zero skips (TEST-CI-002).
-- Remaining: remote GitHub Actions execution and branch-protection settings require branch publication/repository configuration. Product gaps and real-agent release checks are tracked above and in `docs/testing.md`.
+- Remaining: branch-protection settings require repository configuration. Remote GitHub Actions execution passed after publication and master integration (TEST-CI-003). Product gaps and real-agent release checks are tracked above and in `docs/testing.md`.
 
 ### DB-MIGRATION-001 Clean PostgreSQL enum on initial downgrade
 
