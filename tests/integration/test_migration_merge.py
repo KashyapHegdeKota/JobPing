@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
 
@@ -28,7 +29,7 @@ def test_existing_schema_branch_upgrades_to_combined_head(
         assert {"job_occurrences", "job_source_observations"} <= set(inspector.get_table_names())
         with engine.connect() as connection:
             assert connection.execute(text("SELECT version_num FROM alembic_version")).all() == [
-                ("0007_merge_location_repost",)
+                (ScriptDirectory.from_config(config).get_current_head(),)
             ]
     finally:
         engine.dispose()

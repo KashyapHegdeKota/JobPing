@@ -33,6 +33,7 @@ class DatabaseModelsTestCase(unittest.TestCase):
             set(inspector.get_table_names()),
             {
                 "companies",
+                "analytics_events",
                 "job_postings",
                 "job_occurrences",
                 "job_source_observations",

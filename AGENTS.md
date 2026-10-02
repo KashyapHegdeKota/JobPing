@@ -88,6 +88,17 @@ responses, validation errors, logs or client storage. Webhook signatures and own
 checks are mandatory. Tests must use isolated databases and mocked Firebase/HTTP.
 See `docs/notifications.md` for configuration, rollout and recovery contracts.
 
+## Analytics
+
+`analytics_events` (`0008_analytics`) records first-party signed-in activity with
+server-derived Firebase user IDs, allowlisted pages and bounded feed filters.
+Never store raw searches, full URLs, credentials, IPs or application answers.
+`/api/v1/analytics/me` must always scope activity and delivery counts to the caller;
+`/api/v1/analytics/site` requires a verified UID in server-only
+`ANALYTICS_ADMIN_UIDS` and returns aggregates only. Empty configuration denies
+admin access. Provider acceptance IDs count sent deliveries once, independently
+of retries. UI instrumentation is best effort and must not block job navigation.
+
 ## Application inspection
 
 Phase 1 supports read-only Greenhouse application inspection through `python -m app.cli inspect-application <job_id>`. `ApplicationService` loads an open job through `DatabaseRepository`, detects its ATS, owns the injected `BrowserManager` lifecycle, navigates to the application URL, and delegates DOM normalization to `GreenhouseApplicant`. Lever and Workday are detected but intentionally rejected as unsupported for inspection.
