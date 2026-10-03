@@ -200,6 +200,17 @@ class GitHubClient:
             sha = str(payload["sha"])
         except KeyError as exc:
             raise GitHubClientError("GitHub file content is missing metadata") from exc
+        if payload.get("encoding") == "none" and encoded == "":
+            # The contents endpoint omits inline data for files larger than 1 MB.
+            # Use its immutable blob identity rather than an untrusted download URL
+            # or a second branch lookup that could observe a different revision.
+            if len(sha) != 40 or any(char not in "0123456789abcdef" for char in sha):
+                raise GitHubClientError("GitHub file content has an invalid blob identity")
+            blob = await self._get_json(f"/repos/{owner}/{repo}/git/blobs/{sha}")
+            if not isinstance(blob, dict) or blob.get("sha") != sha:
+                raise GitHubClientError("GitHub returned invalid blob metadata")
+            payload = blob
+            encoded = blob.get("content")
         if not isinstance(encoded, str) or payload.get("encoding") != "base64":
             raise GitHubClientError("GitHub returned an unsupported file encoding")
         try:
