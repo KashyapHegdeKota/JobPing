@@ -41,6 +41,15 @@ No blocked backlog items.
 
 ## Recently Completed
 
+### INGEST-SIMPLIFY-002 Preserve HTML table column identity
+
+- Status: completed
+- HTML parsing respects table headers, the off-season Terms column and nested location cells; literal ampersands, entities and location break variants preserve source text.
+- Added 13 parser/pipeline regression cases; read-only audits preserved all rows in the three captured source files.
+- With explicit user approval and a verified database backup/exact repair list under gitignored `private/backups`, removed 1,202 confirmed malformed jobs, 952 empty company records and only their 1,202 Redis keys. Re-loaded both main READMEs and the internship off-season file with discovery notifications suppressed and sending disabled.
+- Local API/database verification: 4,383 jobs, zero term-as-location records, zero old repair IDs/keys, correct Garmin/X Development/Keysight/Harvey samples and matching sampled SQL/Redis state. No application or email history existed in the repair scope; notification events/matches/deliveries remained empty.
+- Validation: full default suite passed (708 passed, 21 opt-in skips); full Ruff, Black and diff checks passed. Live reload was an approved operational repair, separate from isolated automated tests.
+
 ### INGEST-GITHUB-001 Support large README contents
 
 - Status: completed
