@@ -41,6 +41,14 @@ No blocked backlog items.
 
 ## Recently Completed
 
+### INGEST-GITHUB-001 Support large README contents
+
+- Status: completed
+- Full sync fetches the immutable Git blob when the contents endpoint omits inline data for files above 1 MB; authentication, retries, UTF-8 validation and resource ownership are preserved.
+- Added seven network-free regression cases for inline/large contents, unsafe or mismatched blob identity, invalid encoding/UTF-8 and blob HTTP errors.
+- Read-only live checks retrieved both main READMEs and the 1.72 MB internship off-season README. The new-grad repository lacks an off-season README; documented separate target commands to avoid requesting it.
+- Validation: 28 targeted tests and the full default suite passed (695 passed, 21 opt-in skips); full Ruff, Black and diff checks passed. No development database writes or live email sends were performed by validation.
+
 ### ANALYTICS-001 Site totals and private user activity
 
 - Status: completed
