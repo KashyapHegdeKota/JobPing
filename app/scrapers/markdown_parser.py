@@ -5,13 +5,17 @@ from __future__ import annotations
 import html
 import re
 from collections.abc import Sequence
+from html.parser import HTMLParser
 
 from app.schemas.job import RawJobPayload
 from app.scrapers.git_patch_parser import ChangedLine, ChangeKind
 
 _SEPARATOR_CELL = re.compile(r"^:?-{3,}:?$")
 _HTML_TAG = re.compile(r"<[^<>]*>")
-_HTML_TABLE_CELL = re.compile(r"<td\b[^>]*>(.*?)</td\s*>", re.IGNORECASE | re.DOTALL)
+_ROW_TAG = re.compile(r"<(?P<closing>/)?tr\b[^>]*>", re.IGNORECASE)
+_TERM = re.compile(r"\b(?:winter|spring|summer|fall|autumn)\s+20\d{2}\b", re.IGNORECASE)
+_LOCATION_CELL_END = re.compile(r"</(?:td|li)\s*>", re.IGNORECASE)
+_DETAILS_SUMMARY = re.compile(r"<summary\b[^>]*>.*?</summary\s*>", re.IGNORECASE | re.DOTALL)
 _IMAGE = re.compile(r"!\[[^]\r\n]*]\([^\r\n)]*\)")
 _BARE_URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _HTML_HREF = re.compile(
@@ -22,7 +26,7 @@ _LOCK_ICON = re.compile(r"\U0001f512[\ufe0e\ufe0f]?\ufe0f?")
 _STRIKETHROUGH = re.compile(r"~~(?=\S)[^\r\n~]*(?<=\S)~~")
 _MARKDOWN_MARKUP = re.compile(r"(?<!\\)[*_`]")
 _STRIKE_MARKER = re.compile(r"~~")
-_BREAK_TAG = re.compile(r"<br\s*/?>", re.IGNORECASE)
+_BREAK_TAG = re.compile(r"</?br\s*/?>", re.IGNORECASE)
 _LOCATION_SEPARATOR = re.compile(r"\s*(?:[•·]|\n+)\s*")
 _COMPANY_BADGE = re.compile(r"^[\s🔥⭐🆕]+")
 _CLOSED_STATUS = re.compile(r"^[\s*_`~]*(?:closed)[\s*_`~]*$", re.IGNORECASE)
@@ -31,9 +35,52 @@ _HEADER_ALIASES = {
     "title": {"role", "title", "position", "job title"},
     "location": {"location", "locations"},
     "apply_url": {"application", "application link", "apply", "link"},
-    "date": {"date", "date posted", "posted", "posting date"},
+    "date": {"date", "date posted", "posted", "posting date", "age"},
 }
 _DEFAULT_COLUMNS = ("company", "title", "location", "apply_url", "date")
+
+
+class _HTMLRowCells(HTMLParser):
+    """Keep nested table cells inside their owning outer cell."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.cells: list[str] = []
+        self.kinds: list[str] = []
+        self._depth = 0
+        self._content: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"td", "th"}:
+            if self._depth == 0:
+                self._content = []
+                self.kinds.append(tag)
+            else:
+                self._content.append(self.get_starttag_text())
+            self._depth += 1
+        elif self._depth:
+            self._content.append(self.get_starttag_text())
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in {"td", "th"} and self._depth:
+            self._depth -= 1
+            if self._depth == 0:
+                self.cells.append("".join(self._content))
+            else:
+                self._content.append(f"</{tag}>")
+        elif self._depth:
+            self._content.append(f"</{tag}>")
+
+    def handle_data(self, data: str) -> None:
+        if self._depth:
+            self._content.append(html.escape(data, quote=False))
+
+
+def _html_cells(row: str) -> _HTMLRowCells:
+    parser = _HTMLRowCells()
+    parser.feed(row)
+    parser.close()
+    return parser
 
 
 def coalesce_html_table_rows(lines: Sequence[ChangedLine]) -> tuple[ChangedLine, ...]:
@@ -41,22 +88,28 @@ def coalesce_html_table_rows(lines: Sequence[ChangedLine]) -> tuple[ChangedLine,
     output: list[ChangedLine] = []
     buffered: list[str] = []
     buffered_kind: ChangeKind | None = None
+    row_depth = 0
     for line in lines:
         content = line.content.strip().casefold()
+        depth_change = sum(-1 if tag.group("closing") else 1 for tag in _ROW_TAG.finditer(content))
         if buffered:
             if line.kind is buffered_kind:
                 buffered.append(line.content)
-                if "</tr>" in content:
+                row_depth += depth_change
+                if "</tr>" in content and row_depth <= 0:
                     output.append(ChangedLine(line.kind, "\n".join(buffered)))
                     buffered = []
                     buffered_kind = None
+                    row_depth = 0
                 continue
             output.extend(ChangedLine(buffered_kind, item) for item in buffered)
             buffered = []
             buffered_kind = None
-        if ("<tr" in content or "<td" in content) and "</tr>" not in content:
+            row_depth = 0
+        if ("<tr" in content or "<td" in content) and (depth_change > 0 or "</tr>" not in content):
             buffered = [line.content]
             buffered_kind = line.kind
+            row_depth = depth_change
         else:
             output.append(line)
     if buffered and buffered_kind is not None:
@@ -71,12 +124,19 @@ class MarkdownTableParser:
         self._source = source
         self._source_id = source_id
         self._last_company: str | None = None
+        self._headers: Sequence[str] | None = None
 
     def parse(self, row: str, *, headers: Sequence[str] | None = None) -> RawJobPayload | None:
         """Parse a row and inherit the preceding company for a ``↳`` marker."""
+        if "<th" in row.casefold():
+            header = _html_cells(row)
+            if header.cells and all(kind == "th" for kind in header.kinds):
+                self._headers = header.cells
+                self._last_company = None
+                return None
         raw = parse_markdown_table_row(
             row,
-            headers=headers,
+            headers=headers if headers is not None else self._headers,
             source=self._source,
             source_id=self._source_id,
         )
@@ -141,6 +201,8 @@ def _plain_text(cell: str, *, location: bool = False) -> str:
     """Remove presentation markup while retaining meaningful cell text."""
     value = cell
     if location:
+        value = _DETAILS_SUMMARY.sub("", value)
+        value = _LOCATION_CELL_END.sub("; ", value)
         value = _BREAK_TAG.sub("; ", value)
     value = _IMAGE.sub("", value)
     value = _replace_links_with_labels(value)
@@ -152,7 +214,9 @@ def _plain_text(cell: str, *, location: bool = False) -> str:
     value = _STRIKE_MARKER.sub("", value)
     value = _MARKDOWN_MARKUP.sub("", value)
     value = value.replace(r"\|", "|").replace(r"\*", "*").replace(r"\_", "_")
-    return " ".join(value.split()).strip()
+    if location:
+        value = re.sub(r"(?:;\s*)+", "; ", value)
+    return " ".join(value.split()).strip(" ;" if location else " ")
 
 
 def _is_closed_row(cells: Sequence[str], mapped: dict[str, str]) -> bool:
@@ -286,14 +350,14 @@ def parse_markdown_table_row(
     used. Raw cells and the original row remain in ``payload`` for later state
     classification, including closed-role detection.
     """
-    html_cells = _HTML_TABLE_CELL.findall(row) if "<td" in row.casefold() else []
-    if len(html_cells) > len(_DEFAULT_COLUMNS):
-        html_cells = html_cells[-len(_DEFAULT_COLUMNS) :]
+    html_cells = _html_cells(row).cells if "<td" in row.casefold() else []
     cells = html_cells or _split_row(row)
     if len(cells) < 4 or all(_SEPARATOR_CELL.fullmatch(cell.strip()) for cell in cells):
         return None
 
     columns = _canonical_columns(headers, len(cells))
+    if headers is None and len(cells) == 6 and _TERM.search(_plain_text(cells[3], location=True)):
+        columns = ["company", "title", "location", "extra", "apply_url", "date"]
     if len(columns) < len(cells):
         columns.extend("extra" for _ in range(len(cells) - len(columns)))
     mapped = {
