@@ -461,6 +461,13 @@ CI matrix, coverage reports, and remaining browser-agent release gates.
 - **Redis connection is refused:** start Compose and verify `docker compose exec redis redis-cli
   ping` returns `PONG`.
 - **GitHub returns 403/429:** wait until the reported reset time or provide `GITHUB_TOKEN`.
+- **Large Simplify README files:** GitHub omits inline contents above 1 MB. Full sync
+  automatically retrieves the immutable file blob by SHA, preserving the requested
+  revision and UTF-8 validation.
+- **Full sync returns 404 for a Markdown file:** target paths apply to every selected
+  repository. `New-Grad-Positions` has no `README-Off-Season.md`; sync `README.md`
+  across both repositories, then run an additional sync with
+  `--repo Summer2027-Internships --target-readme README-Off-Season.md`.
 - **Alembic updated SQLite unexpectedly:** export `DATABASE_URL` in the same shell before the
   command; otherwise the documented SQLite fallback is used.
 - **Dependencies or commands are missing:** run `poetry install --with dev`, then prefix project

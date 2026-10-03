@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 from datetime import UTC, datetime
 
@@ -229,3 +230,93 @@ async def test_internally_owned_client_is_closed() -> None:
     assert underlying.is_closed
     with pytest.raises(RuntimeError, match="closed"):
         await client.list_commits("acme", "jobs")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("large", [False, True])
+async def test_file_contents_decode_inline_or_immutable_large_blob(large: bool) -> None:
+    sha = "a" * 40
+    text = "# Jobs\nSoftware Intern · München ↳\n" * (40_000 if large else 1)
+    encoded = base64.b64encode(text.encode()).decode()
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        assert request.headers["Authorization"] == "Bearer test-token"
+        if request.url.path.endswith("/contents/README.md"):
+            assert request.url.params["ref"] == "dev"
+            return httpx.Response(
+                200,
+                json={
+                    "sha": sha,
+                    "content": "" if large else encoded,
+                    "encoding": "none" if large else "base64",
+                    "download_url": "https://untrusted.example/README.md",
+                },
+            )
+        assert request.url.path == f"/repos/acme/jobs/git/blobs/{sha}"
+        assert not request.url.params
+        return httpx.Response(200, json={"sha": sha, "content": encoded, "encoding": "base64"})
+
+    async with httpx.AsyncClient(
+        base_url="https://api.github.test", transport=httpx.MockTransport(handler)
+    ) as http:
+        client = GitHubClient(client=http, token="test-token")
+        content = await client.get_file_text("acme", "jobs", "README.md", ref="dev")
+        await client.aclose()
+        assert not http.is_closed
+    assert (content.path, content.sha, content.text) == ("README.md", sha, text)
+    assert len(requests) == (2 if large else 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "bad_blob",
+    [
+        {"sha": "b" * 40, "content": "", "encoding": "base64"},
+        {"sha": "a" * 40, "content": "", "encoding": "none"},
+        {"sha": "a" * 40, "content": "/w==", "encoding": "base64"},
+    ],
+)
+async def test_large_file_rejects_bad_blob_metadata_encoding_or_utf8(bad_blob: dict) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/contents/" in request.url.path:
+            return httpx.Response(200, json={"sha": "a" * 40, "content": "", "encoding": "none"})
+        return httpx.Response(200, json=bad_blob)
+
+    async with httpx.AsyncClient(
+        base_url="https://api.github.test", transport=httpx.MockTransport(handler)
+    ) as http:
+        with pytest.raises(GitHubClientError):
+            await GitHubClient(client=http).get_file_text("acme", "jobs", "README.md")
+
+
+@pytest.mark.asyncio
+async def test_large_file_rejects_unsafe_blob_identity_before_requesting_it() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json={"sha": "../../secret", "content": "", "encoding": "none"})
+
+    async with httpx.AsyncClient(
+        base_url="https://api.github.test", transport=httpx.MockTransport(handler)
+    ) as http:
+        with pytest.raises(GitHubClientError, match="invalid blob identity"):
+            await GitHubClient(client=http).get_file_text("acme", "jobs", "README.md")
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_large_file_blob_not_found_preserves_specific_error() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if "/contents/" in request.url.path:
+            return httpx.Response(200, json={"sha": "a" * 40, "content": "", "encoding": "none"})
+        return httpx.Response(404)
+
+    async with httpx.AsyncClient(
+        base_url="https://api.github.test", transport=httpx.MockTransport(handler)
+    ) as http:
+        with pytest.raises(GitHubNotFoundError):
+            await GitHubClient(client=http).get_file_text("acme", "jobs", "README.md")
