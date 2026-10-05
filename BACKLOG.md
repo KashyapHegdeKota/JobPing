@@ -6,12 +6,7 @@
 
 ## In Progress
 
-### EMAIL-UI-001 Refresh notification presentation
-
-- Status: in progress
-- Adapt the supplied local alert/recap HTML designs to existing escaped job data and links.
-- Preserve notification matching, counts, rendering size bounds, closed-role behavior and delivery contracts.
-- Validate synthetic previews and the notification tests; no live emails are sent.
+No implementation items in progress.
 
 ## Ready
 
@@ -45,6 +40,14 @@ No blocked backlog items.
 ## Deferred / Technical Debt
 
 ## Recently Completed
+
+### EMAIL-UI-001 Refresh notification presentation
+
+- Status: completed
+- Adapted supplied local alert/recap HTML to navy/mint responsive presentation tables, real escaped job data, closed-role labels, occurrence groups and existing unsubscribe/preferences links.
+- No matching, scheduling, payload freezing, plain-text or delivery logic changed. The UI serves the supplied logo; browse links follow the feed's new `/jobs` UI route.
+- Validation: 36 notification tests and full default suite pass (708 passed, 21 opt-in skips); Ruff and Black pass. Synthetic HTML previews generated without credentials or live sends.
+- Remaining release check: verify Gmail/Outlook inbox rendering with the deployed UI logo asset; browser preview cannot replace mail-client QA.
 
 ### INGEST-SIMPLIFY-002 Preserve HTML table column identity
 
