@@ -43,7 +43,9 @@ def preview(output: Path) -> None:
         },
     ]
     for recap in (False, True):
-        title = "2 new opportunities and 1 reposted role." if recap else "A new opportunity for you."
+        title = (
+            "2 new opportunities and 1 reposted role." if recap else "A new opportunity for you."
+        )
         html = ENV.get_template("email.html").render(
             subject=title,
             preheader="Your matching jobs from JobPing",
