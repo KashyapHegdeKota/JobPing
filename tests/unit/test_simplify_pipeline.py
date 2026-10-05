@@ -178,3 +178,42 @@ async def test_full_sync_fetches_multiple_raw_files_without_commit_diffs() -> No
         "README.md",
         "README-Off-Season.md",
     ]
+
+
+@pytest.mark.asyncio
+async def test_full_sync_preserves_off_season_html_columns_before_hashing() -> None:
+    class HTMLGitHub:
+        async def get_file_text(
+            self, owner: str, repo: str, path: str, *, ref: str | None = None
+        ) -> GitHubFileContent:
+            return GitHubFileContent(
+                path,
+                "fixture-sha",
+                """<table><thead><tr>
+<th>Company</th><th>Role</th><th>Location</th><th>Terms</th><th>Application</th><th>Age</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Garmin</td><td>Audio Engineer Intern</td><td>Miramar, FL</td><td>Winter 2026</td>
+<td><a href="https://jobs.test/20289">Apply</a></td><td>0d</td>
+</tr></tbody></table>""",
+            )
+
+    dedupe = FakeDeduplicator()
+    pipe = SimplifyPipeline(  # type: ignore[arg-type]
+        HTMLGitHub(), dedupe, season=2027, job_type=JobType.INTERNSHIP
+    )
+    result = await pipe.process_full_sync(
+        "SimplifyJobs", "Summer2027-Internships", path="README-Off-Season.md"
+    )
+    assert not result.rejected
+    (item,) = result.categorized(DeduplicationState.NEW_ROLE)
+    assert (item.job.company_name, item.job.title, item.job.location) == (
+        "Garmin",
+        "Audio Engineer Intern",
+        "Miramar, FL",
+    )
+    assert item.raw.payload["date_posted"] == "0d"
+    assert item.job.posted_at is not None
+    assert item.job.season == 2027

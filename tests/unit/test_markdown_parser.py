@@ -1,5 +1,6 @@
 """Tests for Simplify-style Markdown table row parsing."""
 
+import pytest
 from app.scrapers.git_patch_parser import ChangedLine, ChangeKind
 from app.scrapers.markdown_parser import (
     MarkdownTableParser,
@@ -252,3 +253,107 @@ def test_malformed_or_truncated_complex_rows_fail_closed_without_exception() -> 
 def test_long_adversarial_markup_is_handled_without_recursion_or_backtracking_failure() -> None:
     noise = "<" + ("x" * 20_000)
     assert parse_markdown_table_row(f"| Acme | Intern | Remote | {noise} | Today |") is None
+
+
+@pytest.mark.parametrize("term", ["Winter 2026", "Summer 2027<br>Fall 2027"])
+def test_off_season_terms_do_not_shift_company_title_or_location(term: str) -> None:
+    row = (
+        '<tr><td><a href="https://simplify.jobs/c/Garmin">Garmin</a></td>'
+        f"<td>Audio Engineer Intern</td><td>Miramar, FL</td><td>{term}</td>"
+        '<td><a href="https://careers.garmin.test/jobs/20289">Apply</a></td><td>0d</td></tr>'
+    )
+    parsed = parse_markdown_table_row(row)
+    assert parsed is not None
+    assert (parsed.company, parsed.title, parsed.location) == (
+        "Garmin",
+        "Audio Engineer Intern",
+        "Miramar, FL",
+    )
+    assert parsed.payload["date_posted"] == "0d"
+
+
+def test_html_headers_handle_reordered_columns_and_reset_continuation_company() -> None:
+    parser = MarkdownTableParser()
+    assert (
+        parser.parse(
+            "<tr><th>Age</th><th>Role</th><th>Company</th><th>Application</th><th>Terms</th><th>Location</th></tr>"
+        )
+        is None
+    )
+    parsed = parser.parse(
+        "<tr><td>1d</td><td>Intern</td><td>Garmin</td>"
+        '<td><a href="https://jobs.test/1">Apply</a></td>'
+        "<td>Winter 2026</td><td>Miramar, FL</td></tr>"
+    )
+    assert parsed is not None
+    assert (parsed.company, parsed.title, parsed.location) == ("Garmin", "Intern", "Miramar, FL")
+    assert parsed.payload["date_posted"] == "1d"
+    parser.parse(
+        "<tr><th>Company</th><th>Role</th><th>Location</th><th>Application</th><th>Age</th></tr>"
+    )
+    assert (
+        parser.parse(
+            '<tr><td>↳</td><td>Intern</td><td>Remote</td><td><a href="https://jobs.test/2">Apply</a></td><td>1d</td></tr>'
+        )
+        is None
+    )
+
+
+def test_nested_location_cells_preserve_outer_columns_and_distinct_cities() -> None:
+    row = (
+        "<tr><td>Harvey</td><td>Software Engineer New Grad</td>"
+        "<td><details><summary>2 locations</summary><table><tbody>"
+        "<tr><td>SF</td></tr><tr><td>NYC</td></tr></tbody></table></details></td>"
+        '<td><a href="https://jobs.test/harvey">Apply</a></td><td>0d</td></tr>'
+    )
+    parsed = parse_markdown_table_row(row)
+    assert parsed is not None
+    assert (parsed.company, parsed.title, parsed.location) == (
+        "Harvey",
+        "Software Engineer New Grad",
+        "SF; NYC",
+    )
+    assert parsed.payload["date_posted"] == "0d"
+    assert len(parsed.payload["raw_cells"]) == 5
+
+
+def test_nested_rows_coalesce_until_outer_row_closes() -> None:
+    content = (
+        "<tr><td>Harvey</td><td>Engineer</td><td><table>",
+        "<tr><td>SF</td></tr>",
+        "<tr><td>NYC</td></tr></table></td>",
+        '<td><a href="https://jobs.test/harvey">Apply</a></td><td>0d</td></tr>',
+    )
+    rows = coalesce_html_table_rows(tuple(ChangedLine(ChangeKind.ADDED, line) for line in content))
+    assert len(rows) == 1
+    parsed = parse_markdown_table_row(rows[0].content)
+    assert parsed is not None
+    assert parsed.company == "Harvey"
+    assert parsed.location == "SF; NYC"
+
+
+def test_extra_html_notes_column_does_not_discard_company() -> None:
+    parsed = parse_markdown_table_row(
+        '<tr><td>Acme</td><td>Intern</td><td>Remote</td><td><a href="https://jobs.test/1">Apply</a></td><td>1d</td><td>Notes</td></tr>'
+    )
+    assert parsed is not None
+    assert (parsed.company, parsed.title, parsed.location) == ("Acme", "Intern", "Remote")
+
+
+@pytest.mark.parametrize("break_tag", ["<br>", "<br/>", "</br>"])
+def test_location_break_variants_keep_cities_distinct(break_tag: str) -> None:
+    parsed = parse_markdown_table_row(
+        f"| Harvey | Engineer | SF{break_tag}NYC | [Apply](https://jobs.test/1) | 1d |"
+    )
+    assert parsed is not None
+    assert parsed.location == "SF; NYC"
+
+
+@pytest.mark.parametrize("title", ["R&D Intern", "R&amp;D Intern", "R&#38;D Intern"])
+def test_html_entities_preserve_literal_ampersands(title: str) -> None:
+    parsed = parse_markdown_table_row(
+        f"<tr><td>Acme</td><td>{title}</td><td>Remote</td>"
+        '<td><a href="https://jobs.test/1">Apply</a></td><td>0d</td></tr>'
+    )
+    assert parsed is not None
+    assert parsed.title == "R&D Intern"

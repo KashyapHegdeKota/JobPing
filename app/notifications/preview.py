@@ -18,6 +18,7 @@ def preview(output: Path) -> None:
             "season": 2027,
             "closed": False,
             "apply_url": "https://example.com/apply",
+            "date_text": "Discovered Oct 4, 2026",
         },
         {
             "company": "Northstar",
@@ -27,6 +28,8 @@ def preview(output: Path) -> None:
             "season": 2027,
             "closed": False,
             "apply_url": "https://example.com/apply",
+            "date_text": "Posted Oct 4, 2026",
+            "kind": "reposted",
         },
         {
             "company": "Orbit",
@@ -36,10 +39,13 @@ def preview(output: Path) -> None:
             "season": 2027,
             "closed": True,
             "apply_url": "",
+            "date_text": "Posted Oct 3, 2026",
         },
     ]
     for recap in (False, True):
-        title = "3 new opportunities." if recap else "A new opportunity for you."
+        title = (
+            "2 new opportunities and 1 reposted role." if recap else "A new opportunity for you."
+        )
         html = ENV.get_template("email.html").render(
             subject=title,
             preheader="Your matching jobs from JobPing",
@@ -52,6 +58,10 @@ def preview(output: Path) -> None:
             label="YOUR DAILY RECAP" if recap else "NEW JOB MATCH",
             recap=recap,
             jobs=jobs if recap else jobs[:1],
+            new_jobs=[jobs[0], jobs[2]] if recap else [],
+            reposted_jobs=[jobs[1]] if recap else [],
+            new_count=2,
+            reposted_count=1,
             overflow=0,
             app_url="https://example.com",
             recap_url="https://example.com/recap",

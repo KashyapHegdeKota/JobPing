@@ -564,9 +564,13 @@ async def test_html_escapes_scraped_content_and_closed_jobs(sessions: async_sess
         body = await payload(session, item, user)
         assert "<script>" not in body["html"] and "&lt;script&gt;" in body["html"]
         assert "<script>" in body["text"]
+        assert 'src="https://jobping.example/jobping-email-icon.png"' in body["html"]
+        assert "Your next move" in body["html"]
+        assert "[Your business mailing address]" not in body["html"]
         posting.is_closed = True
         body = await payload(session, item, user)
         assert "Applications closed" in body["html"] and ">Apply now<" not in body["html"]
+        assert "View opportunity" not in body["html"]
         assert safe_url("javascript:alert(1)") == ""
 
 

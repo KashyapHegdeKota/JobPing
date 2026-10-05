@@ -208,6 +208,15 @@ Jinja2 template escapes job content, uses inline CSS and presentation tables, an
 ships plain-text alternatives. Links are restricted to HTTP(S). Large recaps stay
 under approximately 90 KB and link to an authenticated page with every matching job.
 
+Alert, repost and recap emails use the supplied navy/mint design, with responsive
+600-pixel presentation tables and Outlook width fallbacks. The recap cards count
+new and reposted occurrences separately. Sample salaries, personal greetings and
+work arrangements are omitted unless supported by existing job data. The logo is
+served at `NOTIFICATION_APP_URL/jobping-email-icon.png`; deploy the sibling UI's
+`public/jobping-email-icon.png` alongside this template. Wordmark text remains
+visible when a mail client blocks images. Frozen delivery payloads retain their
+original design; only newly rendered payloads use the refreshed template.
+
 Run `poetry run pytest`, `poetry run ruff check .`, and `poetry run black --check .`.
 If Windows' shared pytest temp directory is inaccessible, use a fresh directory under
 `.pytest_cache` with `--basetemp`. If sibling `.worktrees` contain unrelated formatting

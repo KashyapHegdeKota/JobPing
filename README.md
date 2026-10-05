@@ -468,6 +468,14 @@ CI matrix, coverage reports, and remaining browser-agent release gates.
   repository. `New-Grad-Positions` has no `README-Off-Season.md`; sync `README.md`
   across both repositories, then run an additional sync with
   `--repo Summer2027-Internships --target-readme README-Off-Season.md`.
+- **Off-season jobs show a role as the company or a term as the location:** upgrade
+  to the corrected HTML parser before syncing. It respects table headers and the
+  extra Terms column, and keeps nested location tables inside their outer cell.
+  Re-syncing alone cannot remove old records with incorrect identity hashes. Back
+  up the database, audit source provenance and application/email references, then
+  repair only confirmed malformed records and their deduplication keys. Keep
+  `NOTIFICATIONS_SUPPRESS_DISCOVERY=true` and `NOTIFICATIONS_SEND_ENABLED=false`
+  during a baseline repair and reload.
 - **Alembic updated SQLite unexpectedly:** export `DATABASE_URL` in the same shell before the
   command; otherwise the documented SQLite fallback is used.
 - **Dependencies or commands are missing:** run `poetry install --with dev`, then prefix project
