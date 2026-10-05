@@ -6,7 +6,12 @@
 
 ## In Progress
 
-No implementation items in progress.
+### EMAIL-UI-001 Refresh notification presentation
+
+- Status: in progress
+- Adapt the supplied local alert/recap HTML designs to existing escaped job data and links.
+- Preserve notification matching, counts, rendering size bounds, closed-role behavior and delivery contracts.
+- Validate synthetic previews and the notification tests; no live emails are sent.
 
 ## Ready
 
