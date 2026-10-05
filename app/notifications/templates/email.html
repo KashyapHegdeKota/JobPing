@@ -1,30 +1,52 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>{{ subject }}</title></head>
-<body style="margin:0;background:#f3f4f6;color:#18181b;font-family:Arial,Helvetica,sans-serif">
-<div style="display:none;max-height:0;overflow:hidden">{{ preheader }}</div>
-{% macro job_card(job, recap=false) %}
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-top:1px solid #e4e4e7"><tr><td style="padding:18px 0">
-{% if job.kind == 'reposted' %}<p style="margin:0 0 8px;font-size:12px;font-weight:bold;letter-spacing:1px">REPOSTED</p>{% endif %}
-<p style="margin:0 0 6px;font-size:13px;font-weight:bold;color:#52525b">{{ job.company }}</p>
-<h2 style="margin:0 0 8px;font-size:19px;line-height:1.4">{{ job.title }}</h2>
-<p style="margin:0 0 14px;color:#52525b;font-size:13px;line-height:1.6">{{ job.location or 'Location not listed' }} · {{ job.job_type }} · {{ job.season }} · {{ job.date_text }}</p>
-{% if job.closed %}<span style="font-size:13px;color:#71717a">Applications closed</span>
-{% elif job.apply_url %}<a href="{{ job.apply_url }}" style="display:inline-block;background:#0891b2;color:#fff;text-decoration:none;font-size:14px;font-weight:bold;padding:12px 20px;border-radius:6px">{% if recap %}Apply{% else %}Apply now{% endif %}</a>{% endif %}
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light"><title>{{ subject }}</title>
+<style>body{margin:0!important;padding:0!important}table{border-collapse:separate}img{border:0;display:block}a{word-wrap:break-word}@media screen and (max-width:620px){.outer{padding:16px 8px!important}.pad{padding-left:20px!important;padding-right:20px!important}.headline{font-size:29px!important;line-height:36px!important}.job-title{font-size:20px!important;line-height:28px!important}}</style></head>
+<body style="margin:0;padding:0;background:#EBEFF4;font-family:'DM Sans',Arial,Helvetica,sans-serif;color:#172640;">
+<div style="display:none;font-size:1px;color:#EBEFF4;line-height:1px;max-height:0;max-width:0;opacity:0;overflow:hidden;mso-hide:all;">{{ preheader }}</div>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" bgcolor="#EBEFF4"><tr><td class="outer" align="center" style="padding:40px 16px;">
+<!--[if mso]><table role="presentation" width="600" cellspacing="0" cellpadding="0"><tr><td><![endif]-->
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;background:#ffffff;border:1px solid #E2E7EF;border-radius:16px;overflow:hidden;">
+<tr><td class="pad" bgcolor="#101D35" style="padding:28px 32px 32px;border-radius:16px 16px 0 0;">
+<table role="presentation" cellspacing="0" cellpadding="0"><tr><td width="36"><img src="{{ app_url }}/jobping-email-icon.png" alt="" width="32" height="32" style="width:32px;height:32px;"></td><td style="padding-left:10px;color:#ffffff;font-weight:700;font-size:23px;letter-spacing:-.5px;">jobping</td></tr></table>
+<p style="margin:26px 0 10px;font-size:11px;line-height:1.6;color:#B9F6DD;font-weight:700;">{% if recap %}YOUR DAILY RECAP{% elif label == 'REPOSTED OPPORTUNITY' %}REPOSTED OPPORTUNITY{% elif jobs %}A NEW OPPORTUNITY JUST DROPPED{% else %}JOBPING UPDATES{% endif %}</p>
+<h1 class="headline" style="margin:0;font-size:34px;line-height:42px;font-weight:700;letter-spacing:-1px;color:#ffffff;">{% if recap %}A day of<br>possibilities.{% elif label == 'REPOSTED OPPORTUNITY' %}A second chance.<br>A fresh start.{% elif jobs %}Your next move<br>just arrived.{% else %}{{ heading }}{% endif %}</h1>
+</td></tr>
+
+{% macro job_card(job, compact=false) %}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:16px;border:1px solid #E2E7EF;border-radius:12px;table-layout:fixed;overflow-wrap:anywhere;word-break:break-word"><tr><td style="padding:24px">
+{% if job.kind == 'reposted' %}<p style="margin:0 0 8px;color:#6554C0;font-size:11px;font-weight:700">REPOSTED</p>{% endif %}
+<p style="margin:0 0 8px;font-size:13px;line-height:1.6;color:#66738A;font-weight:700">{{ job.company }}</p>
+<h2 class="job-title" style="margin:0 0 14px;font-size:{% if compact %}18{% else %}24{% endif %}px;line-height:32px;color:#172640">{{ job.title }}</h2>
+<span style="display:inline-block;padding:5px 10px;background:#EAF8F1;color:#12694C;border-radius:20px;font-size:12px;font-weight:700;line-height:18px">{{ job.job_type | capitalize }} · {{ job.season }}</span>
+<p style="margin:18px 0 6px;font-size:14px;line-height:1.6;color:#66738A">{{ job.location or 'Location not listed' }}</p>
+<p style="margin:0 0 18px;font-size:12px;line-height:20px;color:#12694C">{{ job.date_text }}</p>
+{% if job.closed %}<p style="margin:0;color:#66738A;font-size:13px">Applications closed</p>
+{% elif job.apply_url %}<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td bgcolor="#101D35" align="center" style="border-radius:10px;mso-padding-alt:16px 24px"><a href="{{ job.apply_url }}" style="display:block;padding:16px 24px;color:#ffffff;font-size:15px;font-weight:700;text-decoration:none;line-height:22px">View opportunity →</a></td></tr></table>{% endif %}
 </td></tr></table>
 {% endmacro %}
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td align="center" style="padding:24px 12px">
-<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:600px;table-layout:fixed;overflow-wrap:anywhere;word-break:break-word;background:#fff;border:1px solid #e4e4e7;border-radius:12px">
-<tr><td style="padding:24px 28px;background:#18181b;color:#fff;font-size:24px;font-weight:bold;border-radius:12px 12px 0 0">JobPing<span style="color:#22d3ee">.</span></td></tr>
-<tr><td style="padding:28px"><p style="margin:0 0 12px;color:#0e7490;font-size:12px;font-weight:bold;letter-spacing:1px">{{ label }}</p>
-<h1 style="font-size:26px;line-height:1.3;margin:0 0 12px">{{ heading }}</h1>
-<p style="font-size:14px;line-height:1.6;color:#52525b;margin:0 0 24px">{{ description }}</p>
+<tr><td class="pad" style="padding:28px 32px 32px">
+<p style="margin:0 0 12px;font-size:15px;line-height:1.6;color:#172640;font-weight:700">Hi there,</p>
+{% if jobs or recap %}<p style="margin:0 0 10px;font-size:17px;line-height:1.5;font-weight:700">{{ heading }}</p>{% endif %}
+<p style="margin:0 0 16px;font-size:15px;line-height:1.6;color:#66738A">{{ description }}</p>
 {% if recap %}
-{% if new_jobs %}<h2 style="font-size:17px;margin:24px 0 0">NEW JOBS · {{ new_count }}</h2>{% for job in new_jobs %}{{ job_card(job, true) }}{% endfor %}{% endif %}
-{% if reposted_jobs %}<h2 style="font-size:17px;margin:24px 0 0">REPOSTED JOBS · {{ reposted_count }}</h2>{% for job in reposted_jobs %}{{ job_card(job, true) }}{% endfor %}{% endif %}
-{% else %}{% for job in jobs %}{{ job_card(job) }}{% endfor %}{% endif %}
-{% if overflow %}<p style="font-size:14px;color:#52525b">{{ overflow }} more matches are included in your complete recap.</p>{% endif %}
-{% if recap %}<p style="margin:24px 0 0"><a href="{{ recap_url }}" style="color:#0e7490;font-weight:bold">View complete recap →</a></p>{% endif %}
-<p style="margin:24px 0 0"><a href="{{ app_url }}" style="color:#0e7490">Browse jobs</a></p>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0"><tr><td width="48%" bgcolor="#EAF8F1" style="padding:18px;border-radius:10px"><p style="margin:0;font-size:30px;font-weight:700;color:#12694C">{{ new_count }}</p><p style="margin:4px 0 0;font-size:12px;color:#12694C">New opportunities</p></td><td width="4%"></td><td width="48%" bgcolor="#F1EEFC" style="padding:18px;border-radius:10px"><p style="margin:0;font-size:30px;font-weight:700;color:#6554C0">{{ reposted_count }}</p><p style="margin:4px 0 0;font-size:12px;color:#6554C0">Reposted roles</p></td></tr></table>
+{% if new_jobs %}<h2 style="font-size:13px;margin:28px 0 0;color:#66738A">NEW JOBS · {{ new_count }}</h2>{% for job in new_jobs %}{{ job_card(job, true) }}{% endfor %}{% endif %}
+{% if reposted_jobs %}<h2 style="font-size:13px;margin:28px 0 0;color:#6554C0">REPOSTED JOBS · {{ reposted_count }}</h2>{% for job in reposted_jobs %}{{ job_card(job, true) }}{% endfor %}{% endif %}
+{% if overflow %}<p style="font-size:12px;line-height:1.6;color:#66738A">{{ overflow }} more matches are included in your complete recap.</p>{% endif %}
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:24px"><tr><td bgcolor="#101D35" align="center" style="border-radius:10px;mso-padding-alt:16px 24px"><a href="{{ recap_url }}" style="display:block;padding:16px 24px;color:#fff;font-size:15px;font-weight:700;text-decoration:none;line-height:22px">View complete recap →</a></td></tr></table>
+<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:24px"><tr><td bgcolor="#F5F7FA" style="padding:18px;border-radius:10px"><p style="margin:0 0 6px;font-size:14px;font-weight:700">Your inbox. Your pace.</p><p style="margin:0;font-size:13px;line-height:1.6;color:#66738A">Instant alerts help you act early. Your daily recap helps you catch up. Choose either or both in your <a href="{{ app_url }}/profile" style="color:#12694C">email preferences</a>.</p></td></tr></table>
+{% else %}{% for job in jobs %}{{ job_card(job) }}{% endfor %}
+{% if jobs %}<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin-top:24px"><tr><td bgcolor="#EAF8F1" style="padding:16px 18px;border-radius:10px"><p style="margin:0 0 6px;font-size:10px;font-weight:700;color:#12694C">WHY THIS LANDED IN YOUR INBOX</p><p style="margin:0;font-size:13px;line-height:1.6">This opportunity matches your saved job preferences.</p></td></tr></table>{% endif %}
+{% endif %}
+<p style="margin:26px 0 0;font-size:15px;font-weight:700">Get pinged. Get ahead.</p>
+<p style="margin:16px 0 0;font-size:13px"><a href="{{ app_url }}" style="color:#12694C">Browse jobs</a></p>
 </td></tr>
-<tr><td style="padding:22px 28px;border-top:1px solid #e4e4e7;font-size:12px;line-height:1.7;color:#71717a">You received this because you enabled JobPing email notifications.<br><a href="{{ app_url }}/profile" style="color:#52525b">Manage preferences</a> &nbsp;·&nbsp; <a href="{{ unsubscribe_url }}" style="color:#52525b">Unsubscribe</a></td></tr>
-</table></td></tr></table></body></html>
+<tr><td class="pad" style="padding:26px 32px;background:#F5F7FA;border-top:1px solid #E2E7EF;">
+<p style="margin:0 0 14px;font-size:14px;line-height:1.6;color:#172640;font-weight:700;">Your next chapter starts with a ping.</p>
+<p style="margin:0 0 12px;font-size:12px;line-height:1.6;color:#66738A;font-weight:400;">You received this because you enabled JobPing email notifications.</p>
+<p style="margin:0 0 16px;font-size:12px;line-height:22px;"><a href="{{ app_url }}/profile" style="color:#12694C;text-decoration:underline;">Email preferences</a> &nbsp;·&nbsp; <a href="{{ unsubscribe_url }}" style="color:#66738A;text-decoration:underline;">Unsubscribe</a></p>
+<p style="margin:0;font-size:11px;line-height:1.6;color:#66738A;font-weight:400;">JobPing</p>
+</td></tr>
+</table>
+<!--[if mso]></td></tr></table><![endif]-->
+</td></tr></table></body></html>
