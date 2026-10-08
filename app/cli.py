@@ -9,11 +9,12 @@ import selectors
 from collections.abc import Awaitable
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
 
 import httpx
 import typer
 import uvicorn
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.applications.models import ApplicationCheckpoint
@@ -34,6 +35,11 @@ from app.scrapers.browser import BrowserManager
 from app.scrapers.github_client import GitHubClient
 from app.services.db_audit import AuditReport, DatabaseAuditService
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
+from app.services.employer_history import (
+    import_employer_history,
+    load_employer_history,
+    parse_official_csv,
+)
 from app.trackers.cli import app as trackers_app
 
 app = typer.Typer(help="Run JobPing ingestion tools.", no_args_is_help=True)
@@ -44,6 +50,70 @@ applications_app = typer.Typer(
 app.add_typer(applications_app, name="applications")
 SIMPLIFY_REPOSITORIES = ("Summer2027-Internships", "New-Grad-Positions")
 APPLYGUY_FEEDS = (ApplyGuyFeed.INTERNSHIPS, ApplyGuyFeed.NEW_GRAD)
+
+
+@app.command("prepare-employer-history")
+def prepare_employer_history(
+    csv_file: Path,
+    aliases_file: Path,
+    output: Path,
+    provider: Literal["dol", "uscis"],
+    year: Annotated[int, typer.Option(min=2000, max=2100)],
+    source_url: str,
+) -> None:
+    """Convert an official CSV export using a reviewed legal-name mapping JSON."""
+    try:
+        aliases = json.loads(aliases_file.read_text(encoding="utf-8"))
+        if not isinstance(aliases, dict) or any(
+            not isinstance(key, str) or not isinstance(value, str) for key, value in aliases.items()
+        ):
+            raise ValueError("Invalid alias mapping")
+        data = parse_official_csv(
+            csv_file, provider=provider, year=year, source_url=source_url, aliases=aliases
+        )
+    except (ValueError, OSError):
+        typer.echo("Invalid CSV export or mapping; check the documented format.", err=True)
+        raise typer.Exit(2) from None
+    output.write_text(data.model_dump_json(indent=2), encoding="utf-8")
+    typer.echo(f"Prepared {len(data.records)} dated records for review.")
+
+
+@app.command("import-employer-history")
+def employer_history_command(
+    file: Annotated[Path, typer.Argument(help="Reviewed official employer history JSON.")],
+    dry_run: bool = False,
+) -> None:
+    """Import dated employer evidence using exact, operator-reviewed company mappings."""
+    try:
+        data = load_employer_history(file)
+    except (OSError, ValueError):
+        typer.echo("Invalid employer history file; check the documented schema.", err=True)
+        raise typer.Exit(2) from None
+    if dry_run:
+        typer.echo(f"Validated {len(data.records)} employer history records; no writes.")
+        return
+    database_url = os.getenv("DATABASE_URL")
+    if not database_url:
+        typer.echo("DATABASE_URL is required.", err=True)
+        raise typer.Exit(2)
+
+    async def run() -> int:
+        engine = create_async_engine(database_url)
+        try:
+            async with async_sessionmaker(engine)() as session, session.begin():
+                return await import_employer_history(session, data)
+        finally:
+            await engine.dispose()
+
+    try:
+        count = _asyncio_run(run())
+    except (OSError, ValueError, SQLAlchemyError):
+        typer.echo(
+            "Employer history import failed; verify the database and exact company mappings.",
+            err=True,
+        )
+        raise typer.Exit(1) from None
+    typer.echo(f"Imported {count} dated employer history records.")
 
 
 def _asyncio_run[T](awaitable: Awaitable[T]) -> T:
