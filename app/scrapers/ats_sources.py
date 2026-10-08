@@ -124,6 +124,8 @@ class ConfiguredATSScraper(BaseScraper):
             if category is None:
                 self.filtered_count += 1
                 continue
+            if isinstance(self._delegate, GreenhouseScraper):
+                row = await self._delegate.enrich_pay(row)
             eligible.append(
                 row.model_copy(
                     update={
