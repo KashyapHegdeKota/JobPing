@@ -7,6 +7,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, computed_field
 
 from app.schemas.job import JobType
+from app.schemas.job_details import EmployerRecord, JobDetails
 
 
 class APIResponse(BaseModel):
@@ -22,6 +23,7 @@ class CompanyResponse(APIResponse):
     name: str = Field(min_length=1, max_length=255)
     domain: str | None = Field(default=None, max_length=255)
     created_at: datetime
+    immigration_records: list[EmployerRecord] = Field(default_factory=list)
 
 
 class JobResponse(APIResponse):
@@ -39,6 +41,7 @@ class JobResponse(APIResponse):
     posted_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    details: JobDetails | None = None
 
 
 class StatusLogResponse(APIResponse):
