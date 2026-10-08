@@ -117,6 +117,9 @@ class Company(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     domain: Mapped[str | None] = mapped_column(String(255))
+    immigration_records: Mapped[list] = mapped_column(
+        JSON, default=list, server_default="[]", nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -147,6 +150,7 @@ class JobPosting(Base):
     apply_url: Mapped[str] = mapped_column(String(2048), nullable=False)
     location: Mapped[str] = mapped_column(String(500), nullable=False)
     location_source: Mapped[str | None] = mapped_column(String(100))
+    details: Mapped[dict | None] = mapped_column(JSON)
     season: Mapped[int] = mapped_column(nullable=False)
     job_type: Mapped[JobType] = mapped_column(
         Enum(JobType, name="job_type", values_callable=lambda enum: [item.value for item in enum]),
@@ -207,6 +211,7 @@ class JobOccurrence(Base):
         ForeignKey("job_postings.id", ondelete="CASCADE"), nullable=False
     )
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    details: Mapped[dict | None] = mapped_column(JSON)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     apply_url: Mapped[str] = mapped_column(String(2048), nullable=False)
