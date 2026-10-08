@@ -22,6 +22,7 @@ from app.services.hasher import (
     generate_base_hash,
     generate_content_hash,
 )
+from app.services.job_details import extract_job_details
 from app.services.location_reconciliation import reconcile_location
 from app.services.posting_dates import parse_source_posted_at
 from app.services.repost_classifier import (
@@ -173,6 +174,7 @@ class SimplifyPipeline:
                     payload=raw.payload,
                 )
                 job = NormalizedJob(
+                    details=extract_job_details(raw),
                     company_name=raw.company,
                     title=raw.title or "",
                     base_hash=base_hash,
