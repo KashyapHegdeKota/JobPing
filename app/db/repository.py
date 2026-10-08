@@ -41,6 +41,7 @@ from app.services.hasher import (
     choose_canonical_apply_url,
     generate_content_hash,
 )
+from app.services.job_details import merge_details
 from app.services.location_reconciliation import reconcile_location
 from app.services.repost_classifier import (
     decide_occurrence,
@@ -319,9 +320,11 @@ class DatabaseRepository:
             await self._record_source_observations(
                 [(existing, current_occurrence, observation_job)]
             )
+            details_changed = self._merge_job_details(existing, current_occurrence, observation_job)
             if event_row is not None:
                 await self._record_discovery_rows([event_row])
-            if self._publisher is not None and (was_created or changed):
+            if self._publisher is not None and (was_created or changed or details_changed):
+                company = await self._session.get(Company, existing.company_id)
                 event_type = JobEventType.JOB_CREATED if was_created else JobEventType.JOB_UPDATED
                 self._session.sync_session.info.setdefault(_PENDING_EVENTS_KEY, []).append(
                     {
@@ -330,6 +333,8 @@ class DatabaseRepository:
                         "base_hash": existing.base_hash,
                         "payload": {
                             "company_id": existing.company_id,
+                            "company": company.name if company else None,
+                            "immigration_records": company.immigration_records if company else [],
                             "title": existing.title,
                             "apply_url": existing.apply_url,
                             "location": existing.location,
@@ -337,6 +342,7 @@ class DatabaseRepository:
                             "job_type": existing.job_type.value,
                             "is_closed": existing.is_closed,
                             "content_hash": existing.content_hash,
+                            "details": existing.details,
                         },
                     }
                 )
@@ -983,6 +989,20 @@ class DatabaseRepository:
             event_values: list[dict[str, object]] = []
             source_values: list[dict[str, object]] = []
             result_by_hash: dict[str, PersistedJobResult] = {}
+            event_companies = (
+                {
+                    company.id: company
+                    for company in (
+                        await self._session.scalars(
+                            select(Company).where(
+                                Company.id.in_({posting.company_id for posting in persisted})
+                            )
+                        )
+                    ).all()
+                }
+                if self._publisher is not None
+                else {}
+            )
             for posting in persisted:
                 old = previous.get(posting.base_hash)
                 normalized = job_by_hash[posting.base_hash]
@@ -1062,6 +1082,9 @@ class DatabaseRepository:
                         observation_jobs_by_hash[posting.base_hash],
                     )
                 )
+                details_changed = self._merge_job_details(
+                    posting, current_occurrence, observation_jobs_by_hash[posting.base_hash]
+                )
                 was_changed = old is not None and any(
                     old[key] != getattr(posting, key) for key in old if key != "location_source"
                 )
@@ -1074,8 +1097,12 @@ class DatabaseRepository:
                     changed=content_changed,
                 )
                 result_by_hash[posting.base_hash] = PersistedJobResult(posting, state)
-                if self._publisher is not None and (was_created or was_changed):
-                    self._queue_job_event(posting, was_created=was_created)
+                if self._publisher is not None and (was_created or was_changed or details_changed):
+                    self._queue_job_event(
+                        posting,
+                        was_created=was_created,
+                        company=event_companies.get(posting.company_id),
+                    )
             if status_values:
                 await self._session.execute(insert(StatusLog).values(status_values))
             if source_values:
@@ -1273,7 +1300,26 @@ class DatabaseRepository:
             insert(DiscoveryEvent).values(list(rows)).on_conflict_do_nothing()
         )
 
-    def _queue_job_event(self, posting: JobPosting, *, was_created: bool) -> None:
+    @staticmethod
+    def _merge_job_details(
+        posting: JobPosting, occurrence: JobOccurrence, observation: NormalizedJob
+    ) -> bool:
+        # Ambiguous open observations cannot replace a confirmed closed snapshot.
+        if occurrence.closed_at is not None and not observation.is_closed:
+            return False
+        previous = posting.details
+        merged = merge_details(occurrence.details, observation.details)
+        if occurrence.details != merged:
+            occurrence.details = merged
+        changed = previous != merged
+        if changed:
+            posting.details = merged
+            posting.updated_at = datetime.now(UTC)
+        return changed
+
+    def _queue_job_event(
+        self, posting: JobPosting, *, was_created: bool, company: Company | None = None
+    ) -> None:
         event_type = JobEventType.JOB_CREATED if was_created else JobEventType.JOB_UPDATED
         self._session.sync_session.info.setdefault(_PENDING_EVENTS_KEY, []).append(
             {
@@ -1282,6 +1328,8 @@ class DatabaseRepository:
                 "base_hash": posting.base_hash,
                 "payload": {
                     "company_id": posting.company_id,
+                    "company": company.name if company else None,
+                    "immigration_records": company.immigration_records if company else [],
                     "title": posting.title,
                     "apply_url": posting.apply_url,
                     "location": posting.location,
@@ -1289,6 +1337,7 @@ class DatabaseRepository:
                     "job_type": posting.job_type.value,
                     "is_closed": posting.is_closed,
                     "content_hash": posting.content_hash,
+                    "details": posting.details,
                 },
             }
         )
