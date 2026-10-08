@@ -13,7 +13,8 @@ import pytest_asyncio
 from app.db.models import Base
 from app.db.repository import DatabaseRepository
 from app.events.publisher import EventPublisher, JobEventType
-from app.schemas.job import NormalizedJob
+from app.schemas.job import NormalizedJob, RawJobPayload
+from app.services.job_details import extract_job_details
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -164,3 +165,38 @@ async def test_location_provenance_upgrade_does_not_publish_an_update(
     assert posting is not None
     assert posting.location_source == "greenhouse"
     client.publish.assert_awaited_once()
+
+
+@pytest.mark.parametrize("bulk", [False, True])
+async def test_enrichment_event_waits_for_commit_and_rollback_is_silent(
+    session: AsyncSession, bulk: bool
+) -> None:
+    publisher, client = publisher_with_mock()
+    repository = DatabaseRepository(session, publisher)
+    await repository.save_job_posting(make_job())
+    await repository.wait_for_pending_events()
+    client.publish.reset_mock()
+    details = extract_job_details(
+        RawJobPayload(
+            source="greenhouse",
+            apply_url="https://example.com/jobs/1",
+            payload={"content": "We accept OPT."},
+        )
+    )
+    for abort in (True, False):
+        async with session.begin():
+            job = make_job(details=details)
+            if bulk:
+                await repository.bulk_upsert_job_postings([job])
+            else:
+                await repository.save_job_posting(job)
+            client.publish.assert_not_awaited()
+            if abort:
+                await session.rollback()
+        await repository.wait_for_pending_events()
+        if abort:
+            client.publish.assert_not_awaited()
+    message = json.loads(client.publish.await_args.args[1])
+    assert message["type"] == "JOB_UPDATED"
+    assert message["job"]["details"]["policies"]["opt"]["value"] == "allowed"
+    assert message["job"]["company"] == "Acme"
