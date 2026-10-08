@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repository import DatabaseRepository
 from app.schemas.job import JobType, NormalizedJob, RawJobPayload
+from app.schemas.job_details import JobDetails
 from app.scrapers.base import BaseScraper
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 from app.services.hasher import (
@@ -19,6 +20,7 @@ from app.services.hasher import (
     generate_base_hash,
     generate_content_hash,
 )
+from app.services.job_details import extract_job_details, merge_details
 from app.services.location_reconciliation import reconcile_location
 from app.services.posting_dates import parse_source_posted_at
 from app.services.repost_classifier import (
@@ -152,6 +154,17 @@ class ATSPipeline:
                         previous_raw,
                         previous_job.model_copy(
                             update={
+                                "details": JobDetails.model_validate(
+                                    merge_details(
+                                        (
+                                            previous_job.details.model_dump(mode="json")
+                                            if previous_job.details
+                                            else None
+                                        ),
+                                        job.details,
+                                    )
+                                    or {}
+                                ),
                                 "location": merged.location,
                                 "location_source": merged.location_source,
                                 "content_hash": generate_content_hash(
@@ -274,6 +287,7 @@ class ATSPipeline:
             payload=raw.payload,
         )
         return NormalizedJob(
+            details=extract_job_details(raw),
             company_name=company,
             title=title,
             base_hash=base_hash,
