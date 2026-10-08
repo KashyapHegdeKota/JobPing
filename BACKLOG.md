@@ -10,6 +10,12 @@ No implementation items in progress.
 
 ## Ready
 
+### INGEST-PORTALS-001 Cover selected companies beyond Greenhouse/Lever
+
+- The selected 20-company list is mapped in `docs/direct-ats-company-coverage.md`. Verified direct boards cover Palantir, two SK hynix America boards and Alphabet subsidiary Waymo; Google/DeepMind and the other requested employers need separate portal integrations or board discovery.
+- Verify each portal and its company identity, then wire owned-resource polling with conservative eligibility and isolated acceptance tests. Existing Workday/Meta scraper classes alone do not provide scheduler coverage.
+- The historical DeepMind Greenhouse API returns 404; use current Google Careers rather than the stale board. Registry defaults reject undated Palantir/SK internship/new-grad titles until a deliberate per-board season policy permits them.
+
 ### APP-SAFETY-001 Enforce review and submission evidence
 
 - Require persisted required-field/review completion, explicit authorization and independently reported browser confirmation before submitted.
@@ -40,6 +46,14 @@ No blocked backlog items.
 ## Deferred / Technical Debt
 
 ## Recently Completed
+
+### INGEST-ATS-001 Activate direct Greenhouse and Lever polling
+
+- Status: completed
+- Added strict board/site registry with canonical company names, conservative title/year eligibility, mixed-category ingestion, `run-ats-sync` and real independent scheduler callbacks. Unconfigured providers report disabled; unsupported domains reject rather than silently doing nothing.
+- Run resources close on success, failure and cancellation; branded application URLs preserve API token/ID identity through the centralized classifier. Repeated observations and missing rows preserve existing deduplication, occurrence/event and closure policy.
+- Supplied four live-verified boards for Palantir, two SK hynix America entities and Waymo; compared applicable company names with current ApplyGuy feeds. Strict 2027 eligibility currently admits 52 Waymo rows; undated Palantir/SK roles require an explicit per-board policy. Broader company coverage remains in INGEST-PORTALS-001.
+- Validation: 66 added cases; final full default suite passes (774 passed, 21 opt-in skips), Ruff, Black and diff checks pass. CLI/scheduler dry-runs pass. Live verification was read-only; no development-service ingestion or email delivery was performed.
 
 ### EMAIL-UI-001 Refresh notification presentation
 
