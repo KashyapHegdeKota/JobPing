@@ -42,6 +42,7 @@ Python coverage cannot measure embedded DOM JavaScript; Chromium tests exercise 
 | Persistence | Caller rollback, unique job-attempt constraint, reset/retry audit retention |
 | Discovery identity | Both save paths; duplicate source observations yield one posting/event/attempt; close/reopen retains submitted history |
 | Direct ATS polling | Strict board registry and title eligibility; real scheduler callback → mocked Greenhouse/Lever → isolated SQL; mixed categories, repeat polls, missing rows, failure isolation and owned-resource cancellation |
+| Student/pay evidence | Explicit/negative/conditional/conflicting/unknown policies; separated OPT/STEM OPT; exact official legal-name imports; original pay units/currency; optional Greenhouse failures/cancellation; NO_OP updates, rollback/commit and repost projections; SQLite/PostgreSQL filters and migration round trips |
 | MCP | Official stdio discovery → start → pause/resume → ready; independent server process restart |
 | Browser | Real Chromium DOM inspection, text/select/radio/checkbox/multiselect/textarea/upload, review, explicit synthetic confirmation |
 | Browser failures | Empty/wrong/oversized uploads, missing facts, user-completed verification/CAPTCHA, validation/network/unknown confirmation outcomes |

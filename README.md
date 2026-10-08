@@ -1,5 +1,15 @@
 # JobPing
 
+## International students and posted pay
+
+Job cards expose evidence for CPT/OPT/STEM OPT and sponsorship, dated official
+employer history, and employer-posted pay in its original currency and period.
+Missing information stays unknown; historical sponsorship does not promise role
+eligibility. The UI filters these fields across all result pages.
+Apply the latest migration before restarting services. See
+[evidence, history import and rollout guide](docs/international-students-and-pay.md)
+for official CSV/JSON imports, source limitations and API filters.
+
 ## Analytics
 
 Signed-in users can view their own activity, filter usage, matching occurrences and

@@ -6,7 +6,7 @@
 
 ## In Progress
 
-No implementation items in progress.
+No implementation items currently in progress.
 
 ## Ready
 
@@ -46,6 +46,13 @@ No blocked backlog items.
 ## Deferred / Technical Debt
 
 ## Recently Completed
+
+### DISCOVERY-DETAILS-001 International-student evidence and advertised pay
+
+- Completed: explicit CPT/OPT/STEM OPT, sponsorship/future-sponsorship evidence, dated official company history imports, employer-posted compensation and full-feed API/UI filters. Unknown/conflicting data remains explicit; employer history never grants role eligibility. Salary estimates are excluded by user choice.
+- Added migration `a7b83c96c247`, occurrence-scoped details and metadata-only NO_OP refreshes without hash/discovery-event changes. Confirmed reposts preserve prior evidence and start a fresh projection; live metadata publishes after SQL commit. Exact reviewed legal-name mappings and corresponding official HTTPS hosts are required for imports.
+- Validation: 820 backend tests pass, 22 opt-in skips; isolated PostgreSQL evidence filters and migration upgrade/downgrade/re-upgrade pass. Full Ruff/Black checks pass. Frontend: 105 tests, lint, type checking, production build and controlled desktop/390px phone evidence/filter review pass.
+- Delivery: 15 backend and 11 frontend commits for this feature. Operational rollout still requires the migration, deployment, source repoll and reviewed official history import; no live developer database mutation or email sends were performed. See `docs/international-students-and-pay.md`. Broader company portal coverage remains in INGEST-PORTALS-001.
 
 ### INGEST-ATS-001 Activate direct Greenhouse and Lever polling
 

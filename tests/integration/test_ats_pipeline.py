@@ -49,6 +49,28 @@ class MemoryDeduplicator:
         return DeduplicationState.ROLE_CLOSED if is_closed else DeduplicationState.ROLE_UPDATED
 
 
+async def test_duplicate_sources_keep_stronger_evidence(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    weak = row(source="applyguy_internships").model_copy(update={"payload": {}})
+    direct = row().model_copy(update={"payload": {"content": "We accept OPT."}})
+    scrapers = [
+        FakeScraper("applyguy", "Acme", [weak]),
+        FakeScraper("greenhouse", "Acme", [direct]),
+    ]
+    try:
+        async with sessions() as db:
+            result = await ATSPipeline(
+                scrapers, MemoryDeduplicator(), db, season=2027, job_type=JobType.INTERNSHIP
+            ).run()
+            assert len(result.outcomes) == 1
+            posting = await db.scalar(select(JobPosting))
+            assert posting.details["policies"]["opt"]["value"] == "allowed"
+    finally:
+        for scraper in scrapers:
+            await scraper._client.aclose()
+
+
 def row(
     *,
     source: str = "greenhouse",

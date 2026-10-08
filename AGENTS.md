@@ -61,6 +61,22 @@ Redis classification and PostgreSQL writes are separate systems, not one distrib
 
 The logical posting remains keyed by the existing company/title base hash. A `JobOccurrence` represents one discovery or confirmed repost, with its own ATS evidence and apply URL. Only explicit closure marks an occurrence closed; missing rows from a source never imply closure. A confirmed-closed occurrence remains closed when an open observation cannot prove which occurrence it represents. Such ambiguous observations retain source URL/date provenance without changing the effective posting snapshot or Redis state. A repost requires the previous occurrence to be confirmed closed and the candidate to be open, plus either a changed ATS requisition ID in the same provider/tenant namespace or a direct ATS source with a newer trustworthy posted date and materially changed canonical URL. ApplyGuy IDs and Simplify commit/path provenance are weak; direct ATS URL identity may still establish the requisition. Same-ID reopenings reactivate the existing occurrence. Same-ID repost observations converge on the already-created occurrence. Aggregator URL churn does not create occurrences. Keep this evidence policy centralized in `app.services.repost_classifier` and `app.services.source_identity`.
 
+## International-student and compensation evidence
+
+`app/schemas/job_details.py` and `app/services/job_details.py` own conservative,
+source-backed role policies and employer-posted pay. Missing means unknown;
+dated employer history never establishes role eligibility. Revision `a7b83c96c247`
+adds JSON details on postings/occurrences and immigration records on companies.
+Evidence refreshes on NO_OP independently of identity hashes and discovery events;
+confirmed reposts start a new evidence projection while older occurrences retain
+their details. Do not assign unchanged JSON fields: ORM on-update timestamps must
+not advance on an unchanged job. Metadata events publish only after SQL commit.
+`app/services/employer_history.py` imports corresponding official HTTPS sources
+using exact operator-reviewed legal-name mappings; never fuzzy-join subsidiaries.
+Advertised currency/period remain original, and Greenhouse cents alone do not
+establish a period. Minimum-pay SQL filters compare lower bounds with matching
+currency/period. See `docs/international-students-and-pay.md` for rollout/imports.
+
 ## Email notifications
 
 `app/notifications/` owns opt-in Resend delivery and Firebase-verified preferences.

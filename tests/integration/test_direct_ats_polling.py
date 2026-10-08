@@ -150,7 +150,8 @@ async def test_scheduler_fetch_filter_persist_repeat_and_failure_isolation(
         postings = (await session.scalars(select(JobPosting))).all()
         assert all(not item.is_closed for item in postings)
         assert all(dedupe.values[item.base_hash] == item.content_hash for item in postings)
-    assert len(requests) == 6
+    # Two eligible Greenhouse roles request posted-pay details on each sync.
+    assert len(requests) == 10
 
 
 async def test_malformed_json_failure_does_not_block_other_board(
