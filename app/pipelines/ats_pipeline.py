@@ -94,6 +94,8 @@ class ATSPipeline:
     precedes the SQL transaction. A SQL failure is raised (never hidden), but the current
     deduplicator API has no compare-and-restore primitive, so its cache may be
     ahead of PostgreSQL until TTL expiry or a later reconciliation pass.
+    ``job_type=None`` requires a canonical category on each raw row, for mixed
+    boards whose configured adapter has already applied eligibility filtering.
     """
 
     def __init__(
@@ -103,7 +105,7 @@ class ATSPipeline:
         session: AsyncSession | None,
         *,
         season: int,
-        job_type: JobType,
+        job_type: JobType | None,
     ) -> None:
         if season not in {2026, 2027}:
             raise ValueError("season must be 2026 or 2027")
@@ -280,7 +282,7 @@ class ATSPipeline:
             location=location,
             location_source=raw.source,
             season=self._season,
-            job_type=self._job_type,
+            job_type=JobType(raw.job_type) if self._job_type is None else self._job_type,
             is_closed=closed,
             posted_at=posted_at,
             observed_at=observed_at,
