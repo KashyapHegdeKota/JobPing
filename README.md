@@ -213,6 +213,57 @@ independently under the `applyguy.ai` interval, so one feed failure does not sto
 Temporary disappearance from ApplyGuy is not treated as closure; only explicit closed state
 from a source can close a posting.
 
+Direct Greenhouse and Lever polling
+
+Both providers have real scheduler callbacks and a one-shot `run-ats-sync` command.
+They require a local JSON board registry; no configured boards means that provider
+is disabled. Copy `examples/ats_sources.example.json` to `private/ats_sources.json`
+and replace the placeholder tokens and company names with your chosen boards.
+Use the public board/site token, not a URL, and use the same company name used by
+Simplify/ApplyGuy so global company/title identity stays consistent.
+
+Each entry requires `provider` (`greenhouse` or `lever`), `token`, `company`, and
+`season` (2026 or 2027). Optional `job_types` defaults to both `internship` and
+`new_grad`; optional `allow_undated` defaults to false. Unknown fields, duplicate
+boards, empty categories, and invalid tokens are rejected before any network work.
+
+Eligibility uses titles only: explicit intern/internship/co-op or new/recent/
+university/college graduate labels and graduate engineer/developer/analyst/program/
+trainee labels. Senior/staff/principal/director/head/lead titles, generic entry-level
+roles, ambiguous mixed categories, and titles with other years are excluded.
+By default a title must explicitly contain the configured year. Set
+`allow_undated: true` on a board only if you intend eligible titles without a year
+to belong to its configured season. Description years and posting dates do not
+establish a season. This conservative policy can miss eligible roles; it avoids
+classifying entire boards as internships or new-grad jobs.
+
+PowerShell:
+
+```powershell
+$env:ATS_SOURCES_FILE = "private/ats_sources.json"
+poetry run python -m app.cli run-ats-sync --dry-run
+poetry run python -m app.cli start-scheduler --dry-run
+# Initial seed: suppress historical discovery notifications.
+$env:NOTIFICATIONS_SUPPRESS_DISCOVERY = "true"
+poetry run python -m app.cli run-ats-sync
+$env:NOTIFICATIONS_SUPPRESS_DISCOVERY = "false"
+poetry run python -m app.cli start-scheduler
+```
+
+Both commands also accept `--sources-file PATH`. A real sync requires
+`DATABASE_URL` and Redis; its dry-run only validates configuration. Scheduler
+dry-run validates configured ATS database requirements and lists active boards.
+Polling intervals are `boards.greenhouse.io` and `api.lever.co` (120 seconds by
+default), with independent targets per board. Summaries show fetched, filtered,
+accepted and failed counts; one-shot sync exits nonzero on a board failure.
+Public board responses describe active jobs only; disappearance never closes a job.
+These JSON API clients do not require browser automation. Lever currently uses
+the existing global `api.lever.co` endpoint; EU-hosted Lever boards are unsupported.
+
+The requested technology-company preset is `examples/ats_sources.tech_companies.json`.
+See [selected company coverage](docs/direct-ats-company-coverage.md) for verified
+boards, strict-filter counts, subsidiaries and remaining portal integrations.
+
 Location reconciliation
 
 Each posting stores the source that supplied its current meaningful location. Greenhouse,

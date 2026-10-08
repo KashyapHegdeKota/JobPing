@@ -1,0 +1,20 @@
+{
+  "sources": [
+    {
+      "provider": "greenhouse",
+      "token": "replace_with_board_token",
+      "company": "Replace with canonical company name",
+      "season": 2027,
+      "job_types": ["internship", "new_grad"],
+      "allow_undated": false
+    },
+    {
+      "provider": "lever",
+      "token": "replace_with_site_token",
+      "company": "Replace with canonical company name",
+      "season": 2027,
+      "job_types": ["internship", "new_grad"],
+      "allow_undated": false
+    }
+  ]
+}

@@ -22,11 +22,14 @@ from app.db.models import ApplicationAttempt, ApplicationStatus
 from app.db.repository import DatabaseRepository
 from app.pipelines.applyguy_pipeline import ApplyGuyPipeline
 from app.pipelines.ats_pipeline import ATSPipelineResult
+from app.pipelines.direct_ats_pipeline import DirectATSRun
+from app.pipelines.direct_ats_pipeline import process_direct_ats_sync as _process_ats_sync
 from app.pipelines.simplify_pipeline import PipelineResult, SimplifyPipeline
 from app.scheduler import PollTarget, SchedulerDaemon, parse_intervals
 from app.schemas.application import ApplicationForm
 from app.schemas.job import JobType
 from app.scrapers.applyguy import ApplyGuyFeed, ApplyGuyScraper
+from app.scrapers.ats_sources import ATS_DOMAINS, ATSSource, load_ats_sources
 from app.scrapers.browser import BrowserManager
 from app.scrapers.github_client import GitHubClient
 from app.services.db_audit import AuditReport, DatabaseAuditService
@@ -896,12 +899,85 @@ def run_applyguy_sync(
     )
 
 
+def _report_ats_runs(runs: tuple[DirectATSRun, ...]) -> bool:
+    """Print meaningful board outcomes and return whether any fetch failed."""
+    failed = False
+    for run in runs:
+        result = run.result
+        failed = failed or bool(result.failures)
+        counts = " ".join(
+            f"{state.value}={len(result.categorized(state))}" for state in DeduplicationState
+        )
+        typer.echo(
+            _console_safe(
+                f"{run.source.name} ({run.source.company}): fetched={run.fetched} "
+                f"filtered={run.filtered} accepted={len(result.outcomes)} "
+                f"rejected={len(result.rejected)} duplicates/coalesced={len(result.duplicates)} "
+                f"failures={len(result.failures)} {counts}"
+            )
+        )
+        for failure in result.failures:
+            typer.echo(f"  {failure.error_type}: {failure.reason}", err=True)
+    return failed
+
+
+@app.command("run-ats-sync")
+def run_ats_sync(
+    sources_file: Annotated[
+        Path | None,
+        typer.Option("--sources-file", envvar="ATS_SOURCES_FILE", help="ATS board registry JSON."),
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Validate boards without fetching or writing.")
+    ] = False,
+    redis_url: Annotated[str, typer.Option(envvar="REDIS_URL")] = "redis://localhost:6379/0",
+    database_url: Annotated[str | None, typer.Option(envvar="DATABASE_URL")] = None,
+) -> None:
+    """Fetch eligible roles from configured Greenhouse and Lever boards."""
+    try:
+        sources = load_ats_sources(sources_file)
+        if not sources:
+            raise ValueError("--sources-file or ATS_SOURCES_FILE is required for ATS sync")
+        if dry_run:
+            for source in sources:
+                typer.echo(_console_safe(_ats_configuration_line(source)))
+            return
+        resolved_database_url = _database_or_exit(database_url)
+        runs = _asyncio_run(
+            _process_ats_sync(
+                sources=sources, redis_url=redis_url, database_url=resolved_database_url
+            )
+        )
+    except typer.Exit:
+        raise
+    except (KeyboardInterrupt, asyncio.CancelledError):
+        typer.echo("ATS sync cancelled.", err=True)
+        raise typer.Exit(code=130) from None
+    except ValueError as exc:
+        typer.echo(f"ATS configuration failed: {exc}", err=True)
+        raise typer.Exit(code=2) from None
+    except Exception as exc:
+        typer.echo(f"ATS sync failed: {type(exc).__name__}: {exc}", err=True)
+        raise typer.Exit(code=1) from None
+    if _report_ats_runs(runs):
+        raise typer.Exit(code=1)
+
+
+def _ats_configuration_line(source: ATSSource) -> str:
+    categories = ",".join(item.value for item in source.job_types)
+    return (
+        f"{source.name}: company={source.company} season={source.season} "
+        f"types={categories} allow_undated={str(source.allow_undated).lower()}"
+    )
+
+
 def _scheduler_targets(
     intervals: list[str],
     *,
     redis_url: str,
     github_token: str | None,
     database_url: str | None,
+    ats_sources: tuple[ATSSource, ...] = (),
 ) -> tuple[PollTarget, ...]:
     """Build scheduler callbacks, including both live Simplify repositories."""
     targets: list[PollTarget] = []
@@ -942,11 +1018,26 @@ def _scheduler_targets(
                 targets.append(PollTarget(f"applyguy.ai/{feed_type.value}", seconds, poll_applyguy))
             continue
 
-        async def placeholder(target: str = domain) -> None:
-            # Source-specific callbacks are registered as their production wiring lands.
-            await asyncio.sleep(0)
+        if domain in ATS_DOMAINS:
+            boards = tuple(item for item in ats_sources if item.provider == ATS_DOMAINS[domain])
+            if not boards:
+                continue
+            if not database_url:
+                raise ValueError("DATABASE_URL is required for configured ATS polling")
+            for board in boards:
 
-        targets.append(PollTarget(domain, seconds, placeholder))
+                async def poll_ats(
+                    source: ATSSource = board, ats_database_url: str = database_url
+                ) -> None:
+                    runs = await _process_ats_sync(
+                        sources=(source,), redis_url=redis_url, database_url=ats_database_url
+                    )
+                    if _report_ats_runs(runs):
+                        raise RuntimeError(f"ATS polling failed for {source.name}")
+
+                targets.append(PollTarget(board.name, seconds, poll_ats))
+            continue
+        raise ValueError(f"Unsupported scheduler domain: {domain}")
     return tuple(targets)
 
 
@@ -956,6 +1047,7 @@ async def _serve_scheduler(
     redis_url: str,
     github_token: str | None,
     database_url: str | None,
+    ats_sources: tuple[ATSSource, ...] = (),
 ) -> None:
     """Build the configured daemon and wait until interrupted."""
     daemon = SchedulerDaemon()
@@ -964,6 +1056,7 @@ async def _serve_scheduler(
         redis_url=redis_url,
         github_token=github_token,
         database_url=database_url,
+        ats_sources=ats_sources,
     ):
         daemon.register(target)
     await daemon.serve()
@@ -971,6 +1064,10 @@ async def _serve_scheduler(
 
 @app.command("start-scheduler")
 def start_scheduler(
+    sources_file: Annotated[
+        Path | None,
+        typer.Option("--sources-file", envvar="ATS_SOURCES_FILE", help="ATS board registry JSON."),
+    ] = None,
     interval: Annotated[
         list[str] | None,
         typer.Option(
@@ -1004,7 +1101,20 @@ def start_scheduler(
             "boards.greenhouse.io=120",
             "api.lever.co=120",
         ]
+        sources = load_ats_sources(sources_file)
+        resolved_database_url = database_url or os.environ.get("DATABASE_URL")
+        # Validate the same real targets for dry-run and execution.
+        targets = _scheduler_targets(
+            interval,
+            redis_url=redis_url,
+            github_token=github_token,
+            database_url=resolved_database_url,
+            ats_sources=sources,
+        )
         parsed = parse_intervals(interval)
+        for domain, provider in ATS_DOMAINS.items():
+            if domain in parsed and not any(item.provider == provider for item in sources):
+                typer.echo(f"{provider}: disabled (no configured boards)")
         if dry_run:
             for domain, seconds in parsed.items():
                 typer.echo(f"{domain}={seconds:g}s")
@@ -1014,13 +1124,19 @@ def start_scheduler(
                 elif domain in {"applyguy.ai", "raw.githubusercontent.com"}:
                     for feed_type in APPLYGUY_FEEDS:
                         typer.echo(f"  ApplyGuy/{feed_type.repository}/{feed_type.path}")
+                elif domain in ATS_DOMAINS:
+                    for source in sources:
+                        if source.provider == ATS_DOMAINS[domain]:
+                            typer.echo(_console_safe(f"  {_ats_configuration_line(source)}"))
+            typer.echo(f"Active polling targets: {len(targets)}")
             return
         _asyncio_run(
             _serve_scheduler(
                 interval,
                 redis_url=redis_url,
                 github_token=github_token,
-                database_url=database_url or os.environ.get("DATABASE_URL"),
+                database_url=resolved_database_url,
+                ats_sources=sources,
             )
         )
     except (KeyboardInterrupt, asyncio.CancelledError):

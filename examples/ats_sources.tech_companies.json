@@ -1,0 +1,32 @@
+{
+  "sources": [
+    {
+      "provider": "lever",
+      "token": "palantir",
+      "company": "Palantir Technologies",
+      "season": 2027,
+      "allow_undated": false
+    },
+    {
+      "provider": "greenhouse",
+      "token": "skhynixamerica",
+      "company": "SK hynix America",
+      "season": 2027,
+      "allow_undated": false
+    },
+    {
+      "provider": "greenhouse",
+      "token": "skhynixmemorysolutionsamericainc",
+      "company": "SK hynix memory solutions America Inc.",
+      "season": 2027,
+      "allow_undated": false
+    },
+    {
+      "provider": "greenhouse",
+      "token": "waymo",
+      "company": "Waymo",
+      "season": 2027,
+      "allow_undated": false
+    }
+  ]
+}

@@ -30,13 +30,21 @@ def stable_posting_identity(
         return None
     external_id = str(payload.get("id") or source_id).strip()
     if normalized_source == "greenhouse":
-        match = re.fullmatch(r"greenhouse:([^:]+):([^:]+)", external_id, re.IGNORECASE)
+        # Public boards may link to a branded careers URL (e.g. Waymo).
+        # Keep the API board token and ID even when payload.id is a bare number.
+        match = re.fullmatch(
+            r"greenhouse:([^:]+):([^:]+)", source_id, re.IGNORECASE
+        ) or re.fullmatch(r"greenhouse:([^:]+):([^:]+)", external_id, re.IGNORECASE)
         if match:
             tenant, external_id = match.groups()
         else:
             tenant = _tenant_from_url(apply_url)
     else:
         tenant = _tenant_from_url(apply_url)
+        if normalized_source == "lever" and tenant is None:
+            site = payload.get("site")
+            if isinstance(site, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,200}", site):
+                tenant = site
     if not tenant or not external_id or len(external_id) > 255:
         return None
     return f"{normalized_source}:{tenant.casefold()}", external_id
