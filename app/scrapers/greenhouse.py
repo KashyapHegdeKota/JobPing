@@ -114,6 +114,33 @@ class GreenhouseScraper(BaseScraper):
             response.raise_for_status()
         return response
 
+    async def enrich_pay(self, row: RawJobPayload) -> RawJobPayload:
+        """Read published pay ranges from the detail endpoint for an eligible role.
+
+        A failed optional detail request leaves the successfully fetched board row
+        usable; it never discards jobs or guesses missing compensation.
+        """
+        identifier = str(row.payload.get("id", ""))
+        if not identifier.isdigit():
+            return row
+        try:
+            response = await self._client.get(
+                f"{self._base_url}/{quote(self.company, safe='')}/jobs/{identifier}",
+                params={"pay_transparency": "true"},
+                timeout=5.0,
+            )
+            response.raise_for_status()
+            body = response.json()
+            if isinstance(body, dict) and body.get("id") == row.payload.get("id"):
+                payload = dict(row.payload)
+                for field in ("content", "pay_input_ranges"):
+                    if body.get(field) is not None:
+                        payload[field] = body[field]
+                return row.model_copy(update={"payload": payload})
+        except (httpx.HTTPError, ValueError):
+            _LOGGER.warning("greenhouse.pay_detail.unavailable", extra={"board": self.company})
+        return row
+
     async def scrape(self, company: str) -> tuple[RawJobPayload, ...]:
         """Base-scraper-compatible alias for fetching a board."""
         return tuple(await self.fetch_jobs(company))
@@ -157,6 +184,8 @@ class GreenhouseScraper(BaseScraper):
             "departments": item.get("departments"),
             "offices": item.get("offices"),
         }
+        if isinstance(item.get("pay_input_ranges"), list):
+            metadata["pay_input_ranges"] = item["pay_input_ranges"]
         return RawJobPayload(
             source="greenhouse",
             source_id=f"greenhouse:{company}:{job_id}",
