@@ -6,10 +6,7 @@
 
 ## In Progress
 
-### EMAIL-THREAD-001 Group individual alerts in mail conversations
-
-- Implement a stable alert subject and opaque recipient/connection-scoped References header using Gmail's automated-message grouping contract. Keep job titles and explicit repost labels in the body; recaps and connection tests remain separate.
-- Verify isolation, frozen retries and existing delivery payload compatibility without live sends. Publish backend work to GitHub only; publish outstanding frontend launch records to GitHub and verify Vercel production.
+No in-progress backlog items.
 
 ## Ready
 
@@ -53,6 +50,20 @@ No blocked backlog items.
 - Copy encrypted/protected database backups to independently hosted storage; current verified daily 14-day dumps reside on the same VM. Retain encryption keys separately.
 
 ## Recently Completed
+
+### EMAIL-THREAD-DEPLOY-001 Roll out conversation headers on Oracle
+
+- Deployed merged revision `fa06020` as `jobping-backend:threading-fa06020-20261009` through WSL SSH. Verified database backup and source archive retained; previous image tagged `jobping-backend:pre-threading-20261009`. Only API/scheduler/notifications recreated; PostgreSQL/Redis stayed running, with no migration or configuration change.
+- New-image preflight and deployed-container read-only checks rendered two real job occurrences with the same alert subject/reference and distinct job bodies. Test emails remain separate. Sending/discovery flags stay enabled, both recurring opt-in counts remain one, all 25 existing deliveries remain delivered, and no verification email/event was created.
+- Public HTTPS stats/feed, allowed/denied CORS, authentication, WebSocket ping/pong and SSE heartbeat pass. All application containers run the verified image with zero restarts; worker heartbeats have zero pending backlog and direct ATS polling completes without failures. Production retains 4,113 jobs and occurrences. Existing implementation validation remains 838 passed/22 opt-in skips plus all eight GitHub checks.
+- Deployment is complete; actual inbox grouping of the next newly rendered matching alerts remains a mail-client check. Existing frozen messages retain their original headers and Gmail conversation view must be enabled. Rollback and release records are in `docs/deployment.md`.
+
+### EMAIL-THREAD-001 Group individual alerts in mail conversations
+
+- New and repost alerts use the stable subject JobPing job alerts and an opaque References anchor scoped to subscriber, recipient, provider, sender and connection version. Individual job content and explicit repost labels remain in HTML/text. Recaps/tests stay separate; no schema or UI code change is required.
+- Existing frozen deliveries and retried headers remain unchanged. No Resend API ID is used as an SMTP message identity, and no unknown reply parent is fabricated. Gmail conversation view, one-week grouping and 100-message split limits are documented; other clients control their own grouping.
+- Validation: 45 notification tests and the full backend suite pass (838 passed, 22 opt-in skips); full Ruff/Black and whitespace checks pass. All eight GitHub PR checks passed for implementation revision `8f9114c`, including Linux/Windows, controlled browser and isolated PostgreSQL/Redis/MCP acceptance.
+- Published backend PR #39 with separate date-fix, production-launch and threading commits. The subsequently authorized Oracle rollout is completed in EMAIL-THREAD-DEPLOY-001; two newly rendered Gmail inbox alerts remain a mail-client check. Frontend PR #23 was merged and production main `4aedeec` is Ready on Vercel (`BH7fDqoverRTnrKMhmjYA6zAtGyY`) after retrying an initial Git metadata retrieval failure.
 
 ### EMAIL-LIVE-001 Verify and enable production delivery
 
