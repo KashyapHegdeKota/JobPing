@@ -57,6 +57,25 @@ archive. Repolling repaired missing Waymo publication dates with notification
 suppression and preserved existing discovery history. The matching UI revision
 is `25e545e`; both fixes must be retained on future source deployments.
 
+The October 9 email-conversation rollout deploys merged backend revision `fa06020`
+as `jobping-backend:threading-fa06020-20261009`, also tagged as the running `local`
+image. API, scheduler and notifications were recreated without restarting the
+database/cache or changing configuration. No migration was required. A fresh verified
+database dump and `/var/backups/jobping/source-pre-threading-20261009.tar` were retained;
+the previous runtime image is `jobping-backend:pre-threading-20261009`.
+
+Read-only preflight and deployed-container checks rendered two real job occurrences
+with distinct bodies and a common alert subject/reference. Existing frozen deliveries
+retain their headers; only newly rendered alerts use conversation grouping. Public
+HTTPS/CORS/auth/WebSocket/SSE checks and worker/direct-ATS polling pass. No test email
+or discovery event was created by verification. Confirm actual Gmail conversation
+grouping on the next matching alerts with conversation view enabled.
+
+For code rollback, retag the previous image as `jobping-backend:local` and recreate
+only API/scheduler/notifications with Compose `--no-deps`. Restore the reviewed source
+archive before another build. This release has no schema rollback; preserve current
+database activity and private configuration.
+
 The initial Simplify main/off-season, ApplyGuy and direct ATS syncs used
 `NOTIFICATIONS_SUPPRESS_DISCOVERY=true`. Normal scheduler polling records new
 events (`NOTIFICATIONS_SUPPRESS_DISCOVERY=false`). Email delivery was enabled on
