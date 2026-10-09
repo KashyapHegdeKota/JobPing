@@ -20,7 +20,11 @@ def subtract_years(dt: datetime, years: int) -> datetime:
 
 
 def parse_source_posted_at(value: object, *, observed_at: datetime) -> datetime | None:
-    """Parse Simplify's source age (e.g. 0d, 1w, 1mo, 1y, Aug 11, 2026-08-11)."""
+    """Parse source dates, preserving explicit times and day-only precision.
+
+    Date-only values use UTC midnight as a calendar-date marker. It is not an
+    employer-confirmed posting time. Never substitute source update timestamps.
+    """
     if not isinstance(value, str):
         return None
     value = value.strip()
@@ -42,14 +46,22 @@ def parse_source_posted_at(value: object, *, observed_at: datetime) -> datetime 
             return subtract_months(observed_date, amount)
         elif unit == "y":
             return subtract_years(observed_date, amount)
-        elif unit.startswith("h") or unit.startswith("min"):
-            return observed_date
+        elif unit.startswith("h"):
+            return observed_at.astimezone(UTC) - timedelta(hours=amount)
+        elif unit.startswith("min"):
+            return observed_at.astimezone(UTC) - timedelta(minutes=amount)
 
     # Try ISO format
     try:
-        dt = datetime.fromisoformat(value).astimezone(UTC)
-        result = dt.replace(hour=0, minute=0, second=0, microsecond=0)
-        if result > observed_date:
+        dt = datetime.fromisoformat(value)
+        if dt.tzinfo is None:
+            # A calendar date has no timezone; do not interpret it in the host
+            # timezone. A timestamp without an offset is ambiguous.
+            if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+                return None
+            dt = dt.replace(tzinfo=UTC)
+        result = dt.astimezone(UTC)
+        if result > observed_at.astimezone(UTC):
             return None
         return result
     except ValueError:
