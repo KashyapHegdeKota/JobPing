@@ -1,0 +1,9 @@
+[Unit]
+Description=JobPing PostgreSQL backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/jobping/deploy/backup.sh
+UMask=0077

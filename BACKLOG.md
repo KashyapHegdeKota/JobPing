@@ -6,7 +6,7 @@
 
 ## In Progress
 
-No implementation items currently in progress.
+No in-progress backlog items.
 
 ## Ready
 
@@ -45,7 +45,32 @@ No blocked backlog items.
 
 ## Deferred / Technical Debt
 
+### DEPLOY-002 Off-server recovery
+
+- Copy encrypted/protected database backups to independently hosted storage; current verified daily 14-day dumps reside on the same VM. Retain encryption keys separately.
+
 ## Recently Completed
+
+### EMAIL-LIVE-001 Verify and enable production delivery
+
+- Verified `jobping.website` sender domain/SPF/DKIM, disabled provider tracking, matching webhook signing secret and production Firebase recipient checks. Moved Resend's shared delivered/bounced/complained callback from the development tunnel to the production HTTPS API.
+- Enqueued one shared-provider test through the existing durable delivery/worker path to the user-specified verified account. Exactly one attempt; signed webhook recorded delivered and Resend independently reported delivered. User confirmed arrival in the Gmail inbox. Test account's recurring opt-ins remain unchanged.
+- Enabled `NOTIFICATIONS_SEND_ENABLED=true` in the root-only VM configuration and started the notifications Compose profile with automatic restart. Normal discovery suppression is false; the silent historical bootstrap remains intact. Existing subscriber opt-ins and 8 PM saved-timezone recaps preserved.
+- Validation: 36 notification regressions pass; unsigned production webhook returns 400; API/database/Redis are healthy and worker heartbeats every 15 seconds with zero pending backlog or account pauses. Public API/CORS/auth/WebSocket/SSE recheck passes. No application-code change or historical alert creation required; operations and rollback documented in `docs/deployment.md`.
+
+### FEED-DATES-001 Correct source publication dates and launch ordering
+
+- Greenhouse preserves `first_published` from board/detail responses, never the last edit timestamp. Shared parsing retains explicit timezone-aware times and hour/minute ages; source calendar dates remain UTC-midnight markers. UI displays day precision for those markers, fixing RTX's fabricated 22-hour age.
+- Deployed backend image `jobping-backend:dates-20261009` and frontend revision `25e545e` (Vercel `BojGQ12vsw4RboSA8EeR6H45gjPJ`). Suppressed ATS repoll accepted 51 NO_OP rows with zero new/reposted outcomes; all 33 missing Waymo dates filled. All 93 IDs/discovery dates are unchanged, and the top page now contains today's mixed-employer listings.
+- Live source/API match: Waymo Vehicle Intent and Prediction first published September 10 at 20:09:47 UTC, discovered October 9 at 22:26:38 UTC. RTX co-op shows Posted today and explicitly unavailable posting time. Automatic polling, HTTPS/CORS/auth, WebSocket/SSE and browser console remain healthy.
+- Validation: 829 backend tests pass, 22 opt-in skips; full Ruff/Black and diff checks pass. Frontend 107 tests, lint, types, production build and Phoenix date regressions pass; live browser evidence saved under ignored `private/deployment`.
+
+### DEPLOY-001 Launch Oracle VM backend for jobping.website
+
+- Completed: Oracle ARM64 deployment through WSL SSH, loopback-only PostgreSQL/Redis/API containers, current migrations, Nginx/Certbot HTTPS, 4,084 bootstrapped jobs and eight automatic polling targets. Existing hosted services remain healthy.
+- Vercel Production/Preview API setting replaced with the HTTPS origin and production rebuilt successfully; browser shows the populated connected feed with no warning/error logs. Public API/CORS/auth boundaries, WebSocket ping/pong, SSE heartbeat and Firebase Admin access pass.
+- Daily database backup installed and first dump verified; sending disabled, notification worker not started, bootstrap created zero email events/deliveries. Follow-ups tracked in DEPLOY-002; operations documented in `docs/deployment.md`.
+- Validation: 819 tests pass, 22 opt-in skips; full Ruff/Black and diff checks pass, production Compose/Nginx and backup shell validate. Initial pytest attempt hit pre-existing Windows temp-directory permissions; the complete rerun used a new ignored workspace temp directory.
 
 ### DISCOVERY-DETAILS-001 International-student evidence and advertised pay
 

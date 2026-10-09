@@ -1,0 +1,88 @@
+name: jobping
+
+x-runtime: &runtime
+  image: jobping-backend:local
+  build:
+    context: ..
+    dockerfile: deploy/Dockerfile
+    network: host
+  network_mode: host
+  env_file:
+    - /etc/jobping/backend.env
+  restart: unless-stopped
+  init: true
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  volumes:
+    - /etc/jobping/firebase:/run/jobping:ro
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    network_mode: host
+    command: ["postgres", "-p", "5543", "-c", "listen_addresses=127.0.0.1"]
+    env_file:
+      - /etc/jobping/backend.env
+    restart: unless-stopped
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5543 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "6381", "--appendonly", "yes"]
+    restart: unless-stopped
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6381", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  api:
+    <<: *runtime
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8020/api/v1/stats', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  scheduler:
+    <<: *runtime
+    command: ["python", "-m", "app.cli", "start-scheduler"]
+
+  notifications:
+    <<: *runtime
+    profiles: ["notifications"]
+    command: ["python", "-m", "app.cli", "notifications-worker"]
+
+volumes:
+  postgres_data:
+  redis_data:
