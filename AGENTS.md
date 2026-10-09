@@ -90,6 +90,12 @@ reposted events inside the SQL transaction, independently of Redis. Bootstrap ca
 use `suppress_notifications=True` or `NOTIFICATIONS_SUPPRESS_DISCOVERY=true`.
 Never send from ingestion or use Redis Pub/Sub as the durable email queue.
 
+Individual alerts share a stable subject and opaque recipient/sender/connection-scoped
+References anchor for automated mail-client grouping. Repost labels remain explicit in
+the HTML and text. Recaps/tests do not join the alert conversation. Do not use a Resend
+API UUID as an SMTP Message-ID or fabricate a reply parent; frozen payload headers must
+remain unchanged across retries, including deliveries rendered before threading.
+
 Migration `0007_merge_location_repost` joins the location-provenance and repost
 schema branches. Keep both `0006` revisions intact so existing deployments on
 either branch can upgrade to the single head.

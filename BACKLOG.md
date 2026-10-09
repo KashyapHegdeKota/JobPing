@@ -6,7 +6,10 @@
 
 ## In Progress
 
-No in-progress backlog items.
+### EMAIL-THREAD-001 Group individual alerts in mail conversations
+
+- Implement a stable alert subject and opaque recipient/connection-scoped References header using Gmail's automated-message grouping contract. Keep job titles and explicit repost labels in the body; recaps and connection tests remain separate.
+- Verify isolation, frozen retries and existing delivery payload compatibility without live sends. Publish backend work to GitHub only; publish outstanding frontend launch records to GitHub and verify Vercel production.
 
 ## Ready
 

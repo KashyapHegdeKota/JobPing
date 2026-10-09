@@ -47,7 +47,9 @@ service is involved. Recording failures never block browsing.
 ## Email delivery setup
 
 Opt-in job alerts, 8 PM daily recaps, and optional encrypted Resend BYOK settings
-are available from the UI Profile page. Run `poetry run python -m app.cli notifications-worker`
+are available from the UI Profile page. Individual job alerts share a stable subject
+and conversation reference for inbox grouping; recaps and connection tests stay separate.
+Run `poetry run python -m app.cli notifications-worker`
 on the VM; sending defaults to disabled in new installations. Production delivery is
 enabled after a verified inbox test, with the separate notification worker running.
 See [notification setup and operations](docs/notifications.md)
