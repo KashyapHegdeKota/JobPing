@@ -6,10 +6,7 @@
 
 ## In Progress
 
-### EMAIL-THREAD-001 Group individual alerts in mail conversations
-
-- Implement a stable alert subject and opaque recipient/connection-scoped References header using Gmail's automated-message grouping contract. Keep job titles and explicit repost labels in the body; recaps and connection tests remain separate.
-- Verify isolation, frozen retries and existing delivery payload compatibility without live sends. Publish backend work to GitHub only; publish outstanding frontend launch records to GitHub and verify Vercel production.
+No in-progress backlog items.
 
 ## Ready
 
@@ -53,6 +50,13 @@ No blocked backlog items.
 - Copy encrypted/protected database backups to independently hosted storage; current verified daily 14-day dumps reside on the same VM. Retain encryption keys separately.
 
 ## Recently Completed
+
+### EMAIL-THREAD-001 Group individual alerts in mail conversations
+
+- New and repost alerts use the stable subject JobPing job alerts and an opaque References anchor scoped to subscriber, recipient, provider, sender and connection version. Individual job content and explicit repost labels remain in HTML/text. Recaps/tests stay separate; no schema or UI code change is required.
+- Existing frozen deliveries and retried headers remain unchanged. No Resend API ID is used as an SMTP message identity, and no unknown reply parent is fabricated. Gmail conversation view, one-week grouping and 100-message split limits are documented; other clients control their own grouping.
+- Validation: 45 notification tests and the full backend suite pass (838 passed, 22 opt-in skips); full Ruff/Black and whitespace checks pass. All eight GitHub PR checks passed for implementation revision `8f9114c`, including Linux/Windows, controlled browser and isolated PostgreSQL/Redis/MCP acceptance.
+- Published backend PR #39 with separate date-fix, production-launch and threading commits. Backend threading was not deployed or live-tested, per the GitHub-only release request; two newly rendered Gmail inbox alerts remain a rollout check. Frontend PR #23 was merged and production main `4aedeec` is Ready on Vercel (`BH7fDqoverRTnrKMhmjYA6zAtGyY`) after retrying an initial Git metadata retrieval failure.
 
 ### EMAIL-LIVE-001 Verify and enable production delivery
 
