@@ -5,6 +5,30 @@ JobPing sends opted-in users individual matching-job alerts and one daily recap 
 its window, even when an individual alert was sent. Empty recaps are skipped.
 The backend runs on your VM; Render is not required.
 
+## Email conversations
+
+Individual new-job and repost alerts use the stable subject **JobPing job alerts**
+and a shared opaque `References` identifier scoped to the subscriber, recipient,
+provider, sender and connection version. Job titles, companies and explicit repost
+labels remain inside each HTML/plain-text message. Each job still has its own durable
+delivery and quota charge; threading changes inbox presentation only.
+
+[Gmail's automated-message grouping rules](https://support.google.com/mail/answer/5900?hl=en)
+require matching message metadata and reference IDs, with messages sent within a week
+of a previous message. Conversation view must be enabled, and Gmail splits conversations
+after 100 messages. Other mail clients decide their own grouping; a single permanent
+conversation is not guaranteed. Recaps and connection tests keep their own subjects and
+do not carry the alert reference.
+
+The reference is a conversation anchor, not a Resend API ID or fabricated reply to a
+particular delivered message. Resend assigns outgoing message identities; JobPing does
+not override `Message-ID` or add `In-Reply-To` without a known parent message.
+Changing a sender connection or verified recipient starts a different reference.
+Existing frozen deliveries retain their original subjects and headers on retries.
+No migration or frontend release is required. After deploying the backend, verify
+two newly rendered alerts in a Gmail inbox; existing messages are not retroactively
+grouped, and automated tests use mocked delivery only.
+
 ## Setup
 
 1. Install dependencies with `poetry install` and apply `poetry run alembic upgrade head`
@@ -110,7 +134,8 @@ posted date remain attached as provenance, while Redis is refreshed with the eff
 closed SQL state. Later authoritative ATS evidence is therefore evaluated against the
 durable closed occurrence.
 
-Individual repost alerts say “Reposted” in the subject, HTML and text. Daily recaps keep
+Individual repost alerts say “Reposted” in the HTML and text, with the same alert
+subject used for new jobs so they can share a conversation. Daily recaps keep
 new and reposted roles in separate counted sections. Each delivery freezes occurrence
 IDs and the occurrence URL/date snapshot, and the recap API returns those same occurrence
 rows and counts. Pending alerts tied to an occurrence that closes before sending are

@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 import httpx
 import pytest
-from app.db.models import Base, JobPosting, StatusLog
+from app.api.v1.jobs import list_jobs
+from app.db.models import Base, DiscoveryEvent, JobOccurrence, JobPosting, StatusLog
 from app.pipelines.ats_pipeline import ATSPipeline
 from app.schemas.job import JobType, RawJobPayload
 from app.scrapers.base import BaseScraper
@@ -47,6 +49,54 @@ class MemoryDeduplicator:
         if previous == content_hash:
             return DeduplicationState.NO_OP
         return DeduplicationState.ROLE_CLOSED if is_closed else DeduplicationState.ROLE_UPDATED
+
+
+async def test_noop_publication_date_enrichment_corrects_order_without_new_discovery(
+    sessions: async_sessionmaker[AsyncSession],
+) -> None:
+    observed = datetime(2026, 10, 9, 22, 30, tzinfo=UTC)
+    initial = row().model_copy(update={"observed_at": observed})
+    enriched = initial.model_copy(update={"payload": {"posted": "2026-09-10T16:09:47-04:00"}})
+    recent = row(source_id="2", url="https://example.com/jobs/2").model_copy(
+        update={"company": "Beta", "observed_at": observed, "payload": {"posted": "2026-10-09"}}
+    )
+    dedupe = MemoryDeduplicator()
+    scrapers = [
+        FakeScraper("greenhouse", "Acme", [initial, recent]),
+        FakeScraper("greenhouse", "Acme", [enriched]),
+    ]
+    try:
+        async with sessions() as session:
+            await ATSPipeline(
+                [scrapers[0]], dedupe, session, season=2027, job_type=JobType.INTERNSHIP
+            ).run()
+            original = await session.scalar(
+                select(JobPosting).where(
+                    JobPosting.title == initial.title,
+                    JobPosting.apply_url == str(initial.apply_url),
+                )
+            )
+            original_id, discovered_at = original.id, original.created_at
+            event_count = await session.scalar(select(func.count()).select_from(DiscoveryEvent))
+            result = await ATSPipeline(
+                [scrapers[1]], dedupe, session, season=2027, job_type=JobType.INTERNSHIP
+            ).run()
+            assert result.outcomes[0].state is DeduplicationState.NO_OP
+            posting = await session.get(JobPosting, original_id)
+            assert posting.created_at == discovered_at
+            assert posting.posted_at.replace(tzinfo=UTC) == datetime(
+                2026, 9, 10, 20, 9, 47, tzinfo=UTC
+            )
+            assert await session.scalar(select(func.count()).select_from(JobOccurrence)) == 2
+            assert (
+                await session.scalar(select(func.count()).select_from(DiscoveryEvent))
+                == event_count
+            )
+            page = await list_jobs(db=session, page=1, page_size=20)
+            assert [job.company.name for job in page.items] == ["Beta", "Acme"]
+    finally:
+        for scraper in scrapers:
+            await scraper._client.aclose()
 
 
 async def test_duplicate_sources_keep_stronger_evidence(

@@ -242,7 +242,9 @@ async def test_subscriber_matches_each_occurrence_once_and_repost_alert_is_label
         assert [match.event_type for match in matches] == ["discovered", "reposted"]
         assert len(alerts) == 2
         assert len({item.dedupe_key for item in alerts}) == 2
-        assert body["subject"].startswith("Reposted:")
+        original_body = await payload(session, alerts[0], user)
+        assert body["subject"] == original_body["subject"] == "JobPing job alerts"
+        assert body["headers"]["References"] == original_body["headers"]["References"]
         assert "REPOSTED OPPORTUNITY" in body["html"]
         assert "REPOSTED OPPORTUNITY" in body["text"]
 
@@ -474,7 +476,9 @@ async def queued_repost(sessions: async_sessionmaker) -> str:
         )
 
 
-async def test_send_retries_frozen_payload_after_restart(sessions: async_sessionmaker) -> None:
+async def test_send_retries_frozen_payload_after_restart(
+    sessions: async_sessionmaker, monkeypatch: pytest.MonkeyPatch
+) -> None:
     item_id = await queued_repost(sessions)
     async with sessions() as session:
         item = await session.get(EmailDelivery, item_id)
@@ -496,12 +500,16 @@ async def test_send_retries_frozen_payload_after_restart(sessions: async_session
         async with sessions() as session, session.begin():
             posting = await session.get(JobPosting, 1)
             posting.title = "Changed after request"
+        monkeypatch.setenv("RESEND_FROM", "changed@jobping.example")
         restarted = NotificationWorker(
             sessions, client, verify_recipient=AsyncMock(return_value=True)
         )
         assert await restarted.send_one(NOW + timedelta(minutes=5))
     assert requests[0].content == requests[1].content
-    assert json.loads(requests[0].content)["subject"].startswith("Reposted:")
+    body = json.loads(requests[0].content)
+    assert body["subject"] == "JobPing job alerts"
+    assert "REPOSTED OPPORTUNITY" in body["text"]
+    assert "References" in body["headers"]
     assert requests[0].headers["idempotency-key"] == requests[1].headers["idempotency-key"]
     async with sessions() as session:
         item = await session.get(EmailDelivery, item_id)
@@ -572,6 +580,102 @@ async def test_html_escapes_scraped_content_and_closed_jobs(sessions: async_sess
         assert "Applications closed" in body["html"] and ">Apply now<" not in body["html"]
         assert "View opportunity" not in body["html"]
         assert safe_url("javascript:alert(1)") == ""
+
+
+async def test_distinct_jobs_share_alert_conversation_without_losing_content(
+    sessions: async_sessionmaker,
+) -> None:
+    async with sessions() as session, session.begin():
+        user = await seed(session)
+        other = await seed(session, "bob")
+        first = await discover(session, 1)
+        second = await discover(session, 2)
+        first_mail = await payload(session, delivery(user, "alert", "first", [first.id], NOW), user)
+        second_mail = await payload(
+            session, delivery(user, "alert", "second", [second.id], NOW), user
+        )
+        other_mail = await payload(
+            session, delivery(other, "alert", "other", [first.id], NOW), other
+        )
+        assert first_mail["subject"] == second_mail["subject"] == "JobPing job alerts"
+        reference = first_mail["headers"]["References"]
+        assert reference == second_mail["headers"]["References"]
+        assert reference != other_mail["headers"]["References"]
+        assert reference.startswith("<jobping.alerts.") and reference.endswith("@jobping.website>")
+        assert user.email not in reference and user.connection_version not in reference
+        assert "Engineer 1" in first_mail["html"] and "Engineer 1" in first_mail["text"]
+        assert "Engineer 2" in second_mail["html"] and "Engineer 2" in second_mail["text"]
+        assert "Message-ID" not in first_mail["headers"]
+        assert "In-Reply-To" not in first_mail["headers"]
+        assert first_mail["headers"]["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
+
+
+@pytest.mark.parametrize(
+    "change", ["email", "connection", "provider", "byok_sender", "shared_sender"]
+)
+async def test_alert_conversation_changes_with_recipient_or_sender_connection(
+    sessions: async_sessionmaker, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    async with sessions() as session, session.begin():
+        user = await seed(session)
+        if change == "byok_sender":
+            user.provider, user.sender = "byok", "original@jobping.example"
+        posting = await discover(session)
+        item = delivery(user, "alert", "render", [posting.id], NOW)
+        original = await payload(session, item, user)
+        if change == "email":
+            user.email = "new@example.com"
+        elif change == "connection":
+            user.connection_version = "replacement-connection"
+        elif change == "provider":
+            user.provider, user.sender = "byok", "no-reply@jobping.example"
+        elif change == "byok_sender":
+            user.sender = "replacement@jobping.example"
+        else:
+            monkeypatch.setenv("RESEND_FROM", "replacement@jobping.example")
+        updated = await payload(session, item, user)
+        assert original["headers"]["References"] != updated["headers"]["References"]
+
+
+@pytest.mark.parametrize("kind", ["test", "recap"])
+async def test_test_and_recap_messages_do_not_join_alert_conversation(
+    sessions: async_sessionmaker, kind: str
+) -> None:
+    async with sessions() as session, session.begin():
+        user = await seed(session)
+        posting = await discover(session)
+        item = delivery(user, kind, "separate", [posting.id] if kind == "recap" else [], NOW)
+        if kind == "recap":
+            item.window_start, item.window_end = NOW - timedelta(days=1), NOW
+        body = await payload(session, item, user)
+        assert "References" not in body["headers"]
+        assert body["subject"] != "JobPing job alerts"
+        assert "List-Unsubscribe" in body["headers"]
+
+
+async def test_legacy_frozen_delivery_is_not_rewritten_for_threading(
+    sessions: async_sessionmaker,
+) -> None:
+    item_id = await queued(sessions)
+    async with sessions() as session, session.begin():
+        item = await session.get(EmailDelivery, item_id)
+        user = await session.get(Subscriber, item.subscriber_id)
+        frozen = await payload(session, item, user)
+        frozen["subject"] = "New match: Engineer 1 at Acme"
+        frozen["headers"].pop("References")
+        item.payload, item.first_attempt, item.attempts = frozen, NOW, 1
+        item.account, item.connection_version = "shared", user.connection_version
+    requests = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"id": "legacy-accepted"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        worker = NotificationWorker(sessions, client, verify_recipient=AsyncMock(return_value=True))
+        assert await worker.send_one(NOW + timedelta(minutes=2))
+    assert requests == [frozen]
+    assert "References" not in requests[0]["headers"]
 
 
 def test_key_rotation_and_tamper(monkeypatch: pytest.MonkeyPatch) -> None:

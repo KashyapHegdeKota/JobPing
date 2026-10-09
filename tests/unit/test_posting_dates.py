@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+import pytest
 from app.services.posting_dates import parse_source_posted_at
 
 
@@ -30,3 +31,23 @@ def test_parse_source_posted_at() -> None:
 
     assert parse_source_posted_at("invalid", observed_at=observed_at) is None
     assert parse_source_posted_at(None, observed_at=observed_at) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2hrs", datetime(2026, 9, 8, 12, 25, 42, tzinfo=UTC)),
+        ("15min", datetime(2026, 9, 8, 14, 10, 42, tzinfo=UTC)),
+        ("2026-09-08T10:09:47-04:00", datetime(2026, 9, 8, 14, 9, 47, tzinfo=UTC)),
+        ("2026-09-08T14:09:47Z", datetime(2026, 9, 8, 14, 9, 47, tzinfo=UTC)),
+        ("2026-09-08", datetime(2026, 9, 8, tzinfo=UTC)),
+        ("2026-09-08T15:00:00Z", None),
+        ("2026-09-08T10:00:00", None),
+        ("invalid", None),
+    ],
+)
+def test_posting_dates_preserve_supplied_precision(value: str, expected: datetime | None) -> None:
+    assert (
+        parse_source_posted_at(value, observed_at=datetime(2026, 9, 8, 14, 25, 42, tzinfo=UTC))
+        == expected
+    )

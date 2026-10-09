@@ -1,6 +1,17 @@
 # JobPing
 
+## Production hosting
+
+The Oracle VM backend serves `https://api.jobping.website`; the Vercel frontend is
+`https://jobping.website`. See [deployment and backup operations](docs/deployment.md)
+for WSL SSH access, service updates, private database ports and notification rollout.
+
 ## International students and posted pay
+
+The feed sorts by source publication date when available, otherwise by first discovery.
+Greenhouse publication dates come from `first_published`, not the last edit time.
+Sources that supply only a calendar date display “Posted today/yesterday” rather
+than an estimated number of hours. Precise source timestamps retain their time.
 
 Job cards expose evidence for CPT/OPT/STEM OPT and sponsorship, dated official
 employer history, and employer-posted pay in its original currency and period.
@@ -36,8 +47,12 @@ service is involved. Recording failures never block browsing.
 ## Email delivery setup
 
 Opt-in job alerts, 8 PM daily recaps, and optional encrypted Resend BYOK settings
-are available from the UI Profile page. Run `poetry run python -m app.cli notifications-worker`
-on the VM; sending defaults to disabled. See [notification setup and operations](docs/notifications.md)
+are available from the UI Profile page. Individual job alerts share a stable subject
+and conversation reference for inbox grouping; recaps and connection tests stay separate.
+Run `poetry run python -m app.cli notifications-worker`
+on the VM; sending defaults to disabled in new installations. Production delivery is
+enabled after a verified inbox test, with the separate notification worker running.
+See [notification setup and operations](docs/notifications.md)
 for domain verification, Firebase credentials, migrations, quotas and systemd setup.
 Generate offline HTML samples with `poetry run python -m app.cli notifications-preview`.
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -18,6 +20,16 @@ ENV = Environment(
     loader=FileSystemLoader(Path(__file__).parent / "templates"),
     autoescape=select_autoescape(["html"]),
 )
+
+
+def _alert_reference(user: Subscriber, sender: str | None) -> str:
+    """Opaque conversation anchor shared only by one recipient/sender connection."""
+    scope = json.dumps(
+        ["alerts-v1", user.id, user.email, user.provider, sender, user.connection_version],
+        separators=(",", ":"),
+    )
+    token = hashlib.sha256(scope.encode()).hexdigest()
+    return f"<jobping.alerts.{token}@jobping.website>"
 
 
 def safe_url(value: str) -> str:
@@ -132,13 +144,11 @@ async def payload(session: AsyncSession, delivery: EmailDelivery, user: Subscrib
         end = utc(delivery.window_end).astimezone(zone).strftime("%b %d, %Y %I:%M %p %Z")
         description = f"All your matching jobs discovered from {start} to {end}."
     else:
-        first = jobs[0]
+        subject = "JobPing job alerts"
         if reposted_alert:
-            subject = f"Reposted: {first['title']} at {first['company']}"
             heading = "This role has been reposted."
             description = "A previously closed opportunity is available again."
         else:
-            subject = f"New match: {first['title']} at {first['company']}"
             heading, description = (
                 "A new opportunity for you.",
                 "Just discovered, based on your saved preferences.",
@@ -205,16 +215,21 @@ async def payload(session: AsyncSession, delivery: EmailDelivery, user: Subscrib
         lines.append(f"Complete recap ({total_matches} matches): {recap_url}")
     lines.extend([f"Manage preferences: {app_url}/profile", f"Unsubscribe: {unsubscribe}"])
     sender = user.sender if user.provider == "byok" else os.environ["RESEND_FROM"]
+    headers = {
+        "List-Unsubscribe": f"<{unsubscribe}>",
+        "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+    }
+    if delivery.kind == "alert":
+        # Gmail groups automated messages with a common subject and References ID.
+        # This is a conversation anchor, not a claim to reply to a provider message ID.
+        headers["References"] = _alert_reference(user, sender)
     return {
         "from": f"JobPing <{sender}>",
         "to": [user.email],
         "subject": " ".join(subject.split())[:240],
         "html": html,
         "text": "\n".join(lines),
-        "headers": {
-            "List-Unsubscribe": f"<{unsubscribe}>",
-            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
-        },
+        "headers": headers,
     }
 
 

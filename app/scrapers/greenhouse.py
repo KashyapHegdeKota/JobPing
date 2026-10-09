@@ -115,7 +115,7 @@ class GreenhouseScraper(BaseScraper):
         return response
 
     async def enrich_pay(self, row: RawJobPayload) -> RawJobPayload:
-        """Read published pay ranges from the detail endpoint for an eligible role.
+        """Read pay ranges and publication time for an eligible role.
 
         A failed optional detail request leaves the successfully fetched board row
         usable; it never discards jobs or guesses missing compensation.
@@ -136,6 +136,8 @@ class GreenhouseScraper(BaseScraper):
                 for field in ("content", "pay_input_ranges"):
                     if body.get(field) is not None:
                         payload[field] = body[field]
+                if body.get("first_published") is not None:
+                    payload["posted"] = body["first_published"]
                 return row.model_copy(update={"payload": payload})
         except (httpx.HTTPError, ValueError):
             _LOGGER.warning("greenhouse.pay_detail.unavailable", extra={"board": self.company})
@@ -186,6 +188,8 @@ class GreenhouseScraper(BaseScraper):
         }
         if isinstance(item.get("pay_input_ranges"), list):
             metadata["pay_input_ranges"] = item["pay_input_ranges"]
+        if item.get("first_published") is not None:
+            metadata["posted"] = item["first_published"]
         return RawJobPayload(
             source="greenhouse",
             source_id=f"greenhouse:{company}:{job_id}",
