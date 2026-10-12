@@ -5,6 +5,7 @@ import time
 from collections import deque
 from contextlib import suppress
 
+import anyio
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from app.request_limits.leases import Lease, StreamLeases
@@ -66,13 +67,19 @@ async def serve_stream(
                 else:
                     await send({"type": "http.response.body", "body": b"", "more_body": False})
     finally:
-        for task in (connection, renewal):
-            task.cancel()
-        await asyncio.gather(connection, renewal, return_exceptions=True)
-        # Shield owned cleanup from the connection cancellation; retain/await its task.
-        cleanup = asyncio.create_task(leases.release(lease))
-        try:
-            await asyncio.shield(cleanup)
-        except asyncio.CancelledError:
-            await cleanup
-            raise
+
+        async def drain_and_release() -> None:
+            for task in (connection, renewal):
+                task.cancel()
+            await asyncio.gather(connection, renewal, return_exceptions=True)
+            await leases.release(lease)
+
+        cleanup = asyncio.create_task(drain_and_release())
+        # ASGI disconnects can use level-triggered AnyIO cancellation. Shield
+        # both task draining and release, not just the final Redis operation.
+        with anyio.CancelScope(shield=True):
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+                raise
