@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import signal
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -88,10 +89,26 @@ class SchedulerDaemon:
     async def serve(self, stop_event: asyncio.Event | None = None) -> None:
         """Run until signalled or cancelled, always shutting down safely."""
         event = stop_event or asyncio.Event()
+        loop = asyncio.get_running_loop()
+        owns_signal = False
+        if stop_event is None:
+            try:
+                loop.add_signal_handler(signal.SIGTERM, event.set)
+                owns_signal = True
+            except (NotImplementedError, RuntimeError):
+                pass  # Windows and non-main-thread test loops have no Unix handlers.
         self.start()
         try:
             await event.wait()
+            self.scheduler.pause()
+            # Stop new polls, allow in-flight ingestion/sends to finish before shutdown.
+            async with asyncio.timeout(150):
+                for lock in self._locks.values():
+                    async with lock:
+                        pass
         finally:
+            if owns_signal:
+                loop.remove_signal_handler(signal.SIGTERM)
             self.shutdown(wait=False)
 
 

@@ -6,7 +6,11 @@
 
 ## In Progress
 
-No in-progress backlog items.
+### DEPLOY-BG-001 Exact-commit blue-green production delivery
+
+- Status: in progress. Extends DEPLOY-001; off-server backups remain DEPLOY-002.
+- Preserve existing Nginx/Certbot, host networking, production state and private configuration. Add CI-gated SHA/digest images, locked API colors, readiness/version smoke checks, rollback/status, singleton worker cutover and isolated failure simulation.
+- Inspect and adopt the running Oracle installation; configure dedicated restricted SSH access and GitHub production secrets. Preserve unrelated local edits and hosted applications.
 
 ## Ready
 

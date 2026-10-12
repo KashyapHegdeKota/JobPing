@@ -1,0 +1,11 @@
+# Root-owned shell configuration; never source backend.env into a shell.
+JOBPING_ROOT=/srv/jobping
+IMAGE_REPOSITORY=ghcr.io/kashyaphegdekota/jobping
+PRODUCTION_HOST=api.jobping.website
+UPSTREAM_FILE=/etc/nginx/jobping/upstream.conf
+NGINX_CONFIG=/etc/nginx/nginx.conf
+NOTIFICATION_WORKER_ENABLED=true
+READINESS_ATTEMPTS=30
+READINESS_INTERVAL=2
+# Set false on a new VM without legacy /opt/jobping containers.
+LEGACY_ADOPTION=true

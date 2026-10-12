@@ -5,5 +5,5 @@ Requires=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/opt/jobping/deploy/backup.sh
+ExecStart=/bin/sh /srv/jobping/controller/backup.sh
 UMask=0077

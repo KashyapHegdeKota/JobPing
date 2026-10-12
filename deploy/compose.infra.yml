@@ -1,0 +1,35 @@
+# Same existing project, container names and volumes. Adoption does not restart them.
+name: jobping
+services:
+  postgres:
+    image: postgres:16-alpine
+    network_mode: host
+    command: ["postgres", "-p", "5543", "-c", "listen_addresses=127.0.0.1"]
+    env_file: ["${JOBPING_ENV_FILE:-/etc/jobping/backend.env}"]
+    restart: unless-stopped
+    volumes: ["postgres_data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -p 5543 -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+  redis:
+    image: redis:7-alpine
+    network_mode: host
+    command: ["redis-server", "--bind", "127.0.0.1", "--port", "6381", "--appendonly", "yes"]
+    restart: unless-stopped
+    volumes: ["redis_data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6381", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+volumes:
+  postgres_data:
+    name: jobping_postgres_data
+  redis_data:
+    name: jobping_redis_data

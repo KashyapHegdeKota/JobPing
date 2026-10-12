@@ -14,7 +14,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   quality:
@@ -142,3 +142,114 @@ jobs:
           name: service-test-results
           path: test-results/
           retention-days: 14
+
+  deployment-checks:
+    name: Deployment failure simulation
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-test-environment
+        with:
+          python-version: "3.12"
+      - run: shellcheck deploy/scripts/*.sh deploy/backup.sh
+      - run: poetry run pytest tests/deployment -q --basetemp=.pytest-tmp
+      - name: Validate deployment Compose
+        run: |
+          touch /tmp/jobping-ci.env
+          export JOBPING_ENV_FILE=/tmp/jobping-ci.env
+          export JOBPING_IMAGE=ghcr.io/kashyaphegdekota/jobping:${GITHUB_SHA}
+          export JOBPING_COLOR=blue JOBPING_PORT=8001
+          docker compose -p jobping-blue -f deploy/compose.api.yml config --quiet
+          docker compose -p jobping-workers -f deploy/compose.workers.yml --profile notifications config --quiet
+          docker compose -f deploy/compose.infra.yml config --quiet
+
+  production-image:
+    name: Build and verify production ARM64 image
+    needs: [quality, browser, services, deployment-checks]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build once at the tested commit
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: linux/arm64
+          load: true
+          provenance: false
+          tags: ghcr.io/kashyaphegdekota/jobping:${{ github.sha }}
+          build-args: APP_GIT_SHA=${{ github.sha }}
+      - name: Verify the exact image against disposable PostgreSQL/Redis
+        run: bash deploy/scripts/check-image.sh "ghcr.io/kashyaphegdekota/jobping:$GITHUB_SHA" "$GITHUB_SHA"
+      - name: Publish verified image
+        id: publish
+        run: |
+          image="ghcr.io/kashyaphegdekota/jobping:$GITHUB_SHA"
+          docker push "$image"
+          reference=$(docker image inspect --format '{{index .RepoDigests 0}}' "$image")
+          echo "digest=${reference##*@}" >> "$GITHUB_OUTPUT"
+
+  production-deploy:
+    name: Blue-green production deployment
+    needs: [quality, browser, services, deployment-checks, production-image]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    concurrency:
+      group: production-deploy
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned SSH credentials
+        env:
+          SSH_KEY: ${{ secrets.VM_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VM_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/jobping-deploy
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/jobping-deploy ~/.ssh/known_hosts
+      - name: Transfer exact release and deploy its digest
+        env:
+          VM_HOST: ${{ secrets.VM_HOST }}
+          VM_USER: ${{ secrets.VM_USER }}
+          VM_PORT: ${{ secrets.VM_SSH_PORT || '22' }}
+          DIGEST: ${{ needs.production-image.outputs.digest }}
+          REGISTRY_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ "$VM_HOST" =~ ^[a-zA-Z0-9.-]+$ && "$VM_USER" =~ ^[a-z_][a-z0-9_-]*$ && "$VM_PORT" =~ ^[0-9]+$ ]]
+          tar -czf /tmp/release.tar.gz deploy
+          { printf '%s\n' "$REGISTRY_TOKEN"; cat /tmp/release.tar.gz; } |
+            ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=15 \
+              -i ~/.ssh/jobping-deploy -p "$VM_PORT" "$VM_USER@$VM_HOST" \
+              "deploy $GITHUB_SHA $DIGEST" | tee /tmp/deploy.log
+      - name: Deployment summary
+        if: always()
+        env:
+          RESULT: ${{ job.status }}
+          DIGEST: ${{ needs.production-image.outputs.digest }}
+        run: |
+          { echo "Production deployment: $RESULT"; echo "Commit: $GITHUB_SHA"; echo "Image digest: $DIGEST";
+            if [[ -f /tmp/deploy.log ]]; then tail -15 /tmp/deploy.log; fi; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Remove credentials
+        if: always()
+        run: rm -f ~/.ssh/jobping-deploy /tmp/release.tar.gz
