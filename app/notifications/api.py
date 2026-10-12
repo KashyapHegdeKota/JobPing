@@ -20,12 +20,14 @@ from app.api.deps import get_db
 from app.db.models import DiscoveryEvent, EmailAccount, EmailDelivery, EmailWebhookEvent, Subscriber
 from app.notifications.core import lock, next_cutoff
 from app.notifications.render import job_rows, occurrence_rows
-from app.notifications.security import Identity, decrypt, encrypt, identity
+from app.notifications.security import Identity, decrypt, encrypt
 from app.notifications.worker import delivery, match_events
+from app.request_limits.dependencies import limited_identity, private_db
 
 router = APIRouter(tags=["notifications"])
 DB = Annotated[AsyncSession, Depends(get_db)]
-Who = Annotated[Identity, Depends(identity)]
+PrivateDB = Annotated[AsyncSession, Depends(private_db)]
+Who = Annotated[Identity, Depends(limited_identity)]
 
 
 class Settings(BaseModel):
@@ -155,7 +157,7 @@ async def view(session: AsyncSession, user: Subscriber) -> dict:
 
 
 @router.get("/me/notification-settings")
-async def get_settings(session: DB, who: Who, timezone: str = "UTC") -> dict:
+async def get_settings(session: PrivateDB, who: Who, timezone: str = "UTC") -> dict:
     try:
         ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, ValueError):
@@ -164,7 +166,7 @@ async def get_settings(session: DB, who: Who, timezone: str = "UTC") -> dict:
 
 
 @router.put("/me/notification-settings")
-async def put_settings(body: Settings, session: DB, who: Who) -> dict:
+async def put_settings(body: Settings, session: PrivateDB, who: Who) -> dict:
     user = await subscriber(session, who)
     if (body.alerts or body.recap) and not who.verified:
         raise HTTPException(403, "Verify your email before enabling notifications")
@@ -217,7 +219,7 @@ async def put_settings(body: Settings, session: DB, who: Who) -> dict:
 
 
 @router.put("/me/email-provider")
-async def put_provider(body: Provider, session: DB, who: Who) -> dict:
+async def put_provider(body: Provider, session: PrivateDB, who: Who) -> dict:
     user = await subscriber(session, who)
     try:
         cipher = encrypt(body.api_key.get_secret_value())
@@ -233,7 +235,7 @@ async def put_provider(body: Provider, session: DB, who: Who) -> dict:
 
 
 @router.delete("/me/email-provider")
-async def delete_provider(session: DB, who: Who) -> dict:
+async def delete_provider(session: PrivateDB, who: Who) -> dict:
     user = await subscriber(session, who)
     await cancel_pending(session, user)
     user.provider, user.status = "shared", "ready"
@@ -245,7 +247,7 @@ async def delete_provider(session: DB, who: Who) -> dict:
 
 
 @router.post("/me/email-provider/test", status_code=202)
-async def test_provider(session: DB, who: Who) -> dict:
+async def test_provider(session: PrivateDB, who: Who) -> dict:
     user = await subscriber(session, who)
     if not user.verified or user.suppressed:
         raise HTTPException(403, "A verified, unsuppressed recipient is required")
@@ -269,7 +271,7 @@ async def test_provider(session: DB, who: Who) -> dict:
 
 
 @router.get("/me/recaps/{recap_id}")
-async def get_recap(recap_id: str, session: DB, who: Who) -> dict:
+async def get_recap(recap_id: str, session: PrivateDB, who: Who) -> dict:
     user = await subscriber(session, who)
     item = await session.get(EmailDelivery, recap_id)
     if item is None or item.subscriber_id != user.id or item.kind != "recap":
