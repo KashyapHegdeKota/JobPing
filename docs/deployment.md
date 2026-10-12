@@ -27,6 +27,50 @@ interfaces. Nginx is the public boundary on ports 80/443 and supports WebSocket
 upgrades and unbuffered SSE. Certbot manages the certificate and automatic renewal.
 Run one API worker: its event connection manager is process-local.
 
+## Request protection rollout
+
+The implementation is ready for a staged release; the existing production image
+and account/firewall settings have not been changed by this implementation task.
+No migration or ingestion/bootstrap run is required.
+
+1. Install `deploy/nginx-request-limits.conf` and `deploy/nginx-proxy-headers.conf`
+   under `/etc/nginx/jobping/` before applying the updated site configuration.
+   The limits include belongs inside Nginx's `http` context. Preserve Certbot's
+   HTTPS server and existing unrelated virtual hosts. Apply the same JobPing
+   limits/header/error/stream rules to its TLS server, rather than replacing the
+   generated TLS configuration with the port-80 template. Run `sudo nginx -t`
+   before reloading. Dry-run flags start on.
+2. Merge reviewed `deploy/request-limits.env.example` settings into root-only
+   `/etc/jobping/backend.env`. Generate a fresh random secret of at least 32 bytes;
+   do not commit it, expose it to Vercel, or log it. Start in shadow mode. The
+   existing loopback Redis is reused through a separate bounded pool.
+3. Rebuild/recreate only the API with the reviewed source. Its health check now
+   uses loopback `/api/v1/health`. Deploy the coordinated frontend. Verify public
+   feed, private authentication, signed provider callbacks, unsubscribe, allowed
+   and denied CORS, socket keepalive, SSE heartbeat and orderly disconnects.
+4. Watch the minute-level `app.request_limits.diagnostics` operational counters,
+   VM/database/Redis resource headroom and shared-network false positives. Counters
+   contain fixed policy names only. They are in-memory observations; Redis owns
+   enforcement state. Set global request/stream/concurrency capacity using
+   isolated load evidence. The starting limits are not a capacity guarantee.
+5. Change Nginx's two dry-run flags off and API mode to enforce after review.
+   Test rejected HTTP requests have 429, no-store, Retry-After and allowed-origin
+   CORS. For WebSocket handshakes, browsers cannot inspect HTTP retry headers, so
+   the client uses jittered backoff. Existing healthy long-lived streams remain
+   independent of filter changes.
+
+The API currently rejects all new protected requests with 503 on limiter outage;
+the proposed proxy-dependent public-read fallback was deliberately not activated.
+Only a true loopback GET of the dedicated health route bypasses quotas. This cheap
+readiness endpoint checks initialized resources/listener status rather than doing
+SQL on each probe; retain separate service monitoring for database failures.
+
+Rollback the API mode to off and Nginx dry-run flags to on, then recreate/reload
+the affected services. Do not flush Redis or restart PostgreSQL/Redis. Retain
+loopback bindings and forwarding-header sanitization. Counters/leases expire;
+no cleanup migration is required. Review account/edge activation separately in
+[authentication and edge protection](authentication-and-edge-protection.md).
+
 Operations on the VM:
 
 ```sh
