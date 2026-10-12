@@ -22,6 +22,7 @@ def test_modes(mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
         ("REQUEST_LIMIT_LEASE_SECONDS", "0"),
         ("REQUEST_LIMIT_STREAMS_TOTAL", "-1"),
         ("REQUEST_LIMIT_CACHE_SECONDS", "300"),
+        ("REQUEST_LIMIT_HTTP_CONCURRENCY", "0"),
         ("REQUEST_LIMIT_POLICIES", '{"unknown":{"rate":1,"burst":1}}'),
         ("REQUEST_LIMIT_POLICIES", '{"public":{"rate":0,"burst":1}}'),
         ("REQUEST_LIMIT_POLICIES", '{"public":{"rate":1,"burst":true}}'),

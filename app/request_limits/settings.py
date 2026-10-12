@@ -18,6 +18,7 @@ class LimitSettings:
     streams_total: int = 200
     lease_seconds: int = 60
     cache_seconds: int = 30
+    http_concurrency: int = 32
 
     def __post_init__(self) -> None:
         if self.mode not in {"off", "shadow", "enforce"}:
@@ -30,6 +31,7 @@ class LimitSettings:
             or not 1 <= self.streams_total <= 100_000
             or not 6 <= self.lease_seconds <= 300
             or not 0 <= self.cache_seconds <= 60
+            or not 1 <= self.http_concurrency <= 1000
             or set(self.policies) != set(DEFAULT_POLICIES)
         ):
             raise ValueError("Invalid request limit configuration")
@@ -56,6 +58,7 @@ class LimitSettings:
                 streams_total=int(os.environ.get("REQUEST_LIMIT_STREAMS_TOTAL", "200")),
                 lease_seconds=int(os.environ.get("REQUEST_LIMIT_LEASE_SECONDS", "60")),
                 cache_seconds=int(os.environ.get("REQUEST_LIMIT_CACHE_SECONDS", "30")),
+                http_concurrency=int(os.environ.get("REQUEST_LIMIT_HTTP_CONCURRENCY", "32")),
             )
         except (TypeError, ValueError, OverflowError):
             raise ValueError("Invalid request limit configuration; check server settings") from None
