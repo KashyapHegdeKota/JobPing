@@ -93,6 +93,28 @@ async def test_job_error_is_logged_and_nonfatal(caplog: pytest.LogCaptureFixture
     assert "scheduler.poll.failed" in caplog.messages
 
 
+async def test_termination_pauses_and_drains_active_poll() -> None:
+    scheduler = Mock()
+    daemon = SchedulerDaemon(scheduler=scheduler)
+    entered, release, stop = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def poll() -> None:
+        entered.set()
+        await release.wait()
+
+    daemon.register(PollTarget("slow", 1, poll))
+    poll_task = asyncio.create_task(scheduler.add_job.call_args.args[0]())
+    await entered.wait()
+    server_task = asyncio.create_task(daemon.serve(stop))
+    stop.set()
+    await asyncio.sleep(0)
+    scheduler.pause.assert_called_once()
+    assert not server_task.done() and not poll_task.done()
+    release.set()
+    await asyncio.gather(server_task, poll_task)
+    scheduler.shutdown.assert_called_once_with(wait=False)
+
+
 def test_cli_help_and_dry_run_do_not_start_daemon() -> None:
     runner = CliRunner()
     help_result = runner.invoke(app, ["start-scheduler", "--help"])
