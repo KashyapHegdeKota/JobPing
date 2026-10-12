@@ -6,11 +6,7 @@
 
 ## In Progress
 
-### DEPLOY-BG-001 Exact-commit blue-green production delivery
-
-- Status: in progress. Extends DEPLOY-001; off-server backups remain DEPLOY-002.
-- Preserve existing Nginx/Certbot, host networking, production state and private configuration. Add CI-gated SHA/digest images, locked API colors, readiness/version smoke checks, rollback/status, singleton worker cutover and isolated failure simulation.
-- Inspect and adopt the running Oracle installation; configure dedicated restricted SSH access and GitHub production secrets. Preserve unrelated local edits and hosted applications.
+No in-progress backlog items.
 
 ## Ready
 
@@ -61,6 +57,15 @@ No blocked backlog items.
 - Copy encrypted/protected database backups to independently hosted storage; current verified daily 14-day dumps reside on the same VM. Retain encryption keys separately.
 
 ## Recently Completed
+
+### DEPLOY-BG-001 Exact-commit blue-green production delivery
+
+- Reused the full Linux/Windows/browser/service CI gate, then verified one native ARM64 image against disposable PostgreSQL/Redis before SHA-tag publication and digest-pinned deployment. Default `master` and future `main` are supported; deployment locks/concurrency and pinned SSH host verification are enforced.
+- Adopted Oracle Nginx/Certbot and existing private configuration/shared infrastructure. First automatic release `60b877a` passed all CI/image/deployment jobs and became blue; live rollback to legacy and back to blue passed without a build/migration. PostgreSQL/Redis retained their original uptime and zero restarts; unrelated hosted applications and local edits were preserved.
+- Added bounded readiness/version probes, atomic validated upstream switching, standby restoration, interrupted-cutover recovery, status and safe image cleanup. Singleton worker handoff uses stop-before-start, shared role locks, heartbeat health and graceful draining. Existing notifications and opt-ins remain configured; verification did not enqueue mail or ingestion work.
+- Dedicated forced-command SSH key and all four production environment secrets are provisioned. Repaired a discovered CRLF failure in the existing backup timer; a fresh verified dump succeeded on October 12. Operations and expand-contract schema requirements are in `docs/blue-green-deployment.md`; no schema change was added.
+- Validation: full local suite 905 passed with expected platform/opt-in skips; production CI's Linux 3.12 suite passed 928 tests with 84.72% coverage, alongside Windows/other Python versions, browser and service checks. Latest probe/shutdown regressions pass; Linux controller failure/recovery/cleanup simulations pass. Ruff/Black/ShellCheck/actionlint/Compose and real staged Nginx validation pass; public HTTPS/feed/CORS/auth/WebSocket/SSE and rollback pass. Follow-up hardening handles digest-only cleanup references and PostgreSQL initialization readiness.
+- Remaining operator choices: default-branch protection/review policy and off-server backup storage (DEPLOY-002). Request-abuse/provider rollout remains separate in DEPLOY-ABUSE-001.
 
 ### API-ABUSE-001 Protect authentication, refreshes and live feeds
 
