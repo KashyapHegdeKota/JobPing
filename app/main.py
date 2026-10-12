@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.exception_handlers import request_validation_exception_handler
@@ -23,6 +24,11 @@ from sqlalchemy.ext.asyncio import (
 from app.api.v1.router import router as api_v1_router
 from app.api.v1.websocket_manager import manager as websocket_manager
 from app.events.consumer import RedisEventConsumer
+from app.request_limits.diagnostics import report_limits
+from app.request_limits.errors import RequestProtectionError, protection_error_handler
+from app.request_limits.limiter import RequestLimiter
+from app.request_limits.middleware import RequestLimitMiddleware
+from app.request_limits.settings import LimitSettings
 
 DEFAULT_DATABASE_URL = (
     "postgresql+psycopg://jobping:change-me-for-local-development@localhost:5432/jobping"
@@ -73,6 +79,16 @@ def _default_redis_factory(url: str) -> Redis:
     return Redis.from_url(url, decode_responses=True)
 
 
+def _limiter_redis_factory(url: str) -> Redis:
+    return Redis.from_url(
+        url,
+        decode_responses=True,
+        socket_connect_timeout=0.25,
+        socket_timeout=0.25,
+        max_connections=40,
+    )
+
+
 def create_app(
     *,
     database_url: str | None = None,
@@ -81,6 +97,8 @@ def create_app(
     startup_health_checks: bool | None = None,
     engine_factory: EngineFactory = _default_engine_factory,
     redis_factory: RedisFactory = _default_redis_factory,
+    limit_settings: LimitSettings | None = None,
+    limiter_redis_factory: RedisFactory = _limiter_redis_factory,
 ) -> FastAPI:
     """Build an application whose lifespan owns its database and Redis clients."""
     resolved_database_url = _as_async_database_url(
@@ -95,6 +113,7 @@ def create_app(
         if startup_health_checks is not None
         else _environment_flag("STARTUP_HEALTH_CHECKS", default=True)
     )
+    limits = limit_settings if limit_settings is not None else LimitSettings.from_env()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
@@ -108,7 +127,15 @@ def create_app(
         event_consumer = RedisEventConsumer(redis, websocket_manager)
         application.state.redis_event_consumer = event_consumer
         application.state.redis_event_listener_task = None
+        limiter_redis = None
+        limiter_reporter = None
         try:
+            if limits.mode != "off":
+                limiter_redis = limiter_redis_factory(resolved_redis_url)
+                application.state.request_limiter = RequestLimiter(limiter_redis, limits)
+                limiter_reporter = asyncio.create_task(
+                    report_limits(application.state.request_limiter)
+                )
             if check_services:
                 async with engine.connect() as connection:
                     await connection.execute(text("SELECT 1"))
@@ -117,13 +144,21 @@ def create_app(
             application.state.redis_event_listener_task = event_consumer.task
             yield
         finally:
+            if limiter_reporter is not None:
+                limiter_reporter.cancel()
+                with suppress(asyncio.CancelledError):
+                    await limiter_reporter
             try:
                 await event_consumer.stop()
             finally:
                 try:
-                    await redis.aclose()
+                    if limiter_redis is not None:
+                        await limiter_redis.aclose()
                 finally:
-                    await engine.dispose()
+                    try:
+                        await redis.aclose()
+                    finally:
+                        await engine.dispose()
 
     application = FastAPI(
         title="JobPing API",
@@ -132,12 +167,17 @@ def create_app(
         openapi_tags=OPENAPI_TAGS,
         lifespan=lifespan,
     )
+    application.state.request_limiter = None
+    application.state.request_limit_settings = limits
+    application.add_exception_handler(RequestProtectionError, protection_error_handler)
+    application.add_middleware(RequestLimitMiddleware)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=allowed_origins,
         allow_credentials="*" not in allowed_origins,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["Retry-After"],
     )
     application.include_router(api_v1_router)
 
