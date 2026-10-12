@@ -1,5 +1,6 @@
 """Ingress rejection precedes business work and works with CORS and streaming."""
 
+import asyncio
 from collections.abc import AsyncIterator
 
 import httpx
@@ -85,3 +86,41 @@ async def test_internal_health_only_and_denied_origin(client: httpx.AsyncClient)
     result = await client.get("/api/v1/stats", headers={"Origin": "https://evil.test"})
     assert result.status_code == 429
     assert "access-control-allow-origin" not in result.headers
+
+
+async def test_cached_reference_never_reuses_another_origins_cors(
+    client: httpx.AsyncClient,
+) -> None:
+    allowed = await client.get("/api/v1/companies", headers={"Origin": "https://jobping.website"})
+    assert allowed.headers["access-control-allow-origin"] == "https://jobping.website"
+    denied = await client.get("/api/v1/companies", headers={"Origin": "https://evil.test"})
+    assert "access-control-allow-origin" not in denied.headers
+    again = await client.get("/api/v1/companies", headers={"Origin": "https://jobping.website"})
+    assert again.headers["access-control-allow-origin"] == "https://jobping.website"
+    anonymous = await client.get("/api/v1/companies")
+    assert "access-control-allow-origin" not in anonymous.headers
+    assert client.test_app.state.calls == 1
+
+
+async def test_concurrent_http_rejects_without_queue_and_recovers_after_cancellation() -> None:
+    app = FastAPI()
+    app.state.request_limiter = limiter(http_concurrency=1)
+    started = asyncio.Event()
+    app.add_middleware(RequestLimitMiddleware)
+
+    @app.get("/api/v1/jobs")
+    async def blocked() -> dict:
+        started.set()
+        await asyncio.Event().wait()
+        return {}
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app), base_url="https://test"
+    ) as client:
+        request = asyncio.create_task(client.get("/api/v1/jobs"))
+        await started.wait()
+        assert (await client.get("/api/v1/jobs")).status_code == 503
+        request.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await request
+        assert app.middleware_stack.app.active_http == 0

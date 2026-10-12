@@ -33,7 +33,13 @@ class PublicCache:
             return
         if any(name.lower() == b"set-cookie" for name, _ in headers):
             return
-        self.entries[path] = CachedResponse(time.monotonic() + self.seconds, headers, body)
+        # CORS is applied outside the cache, once for the current request's origin.
+        response_headers = [
+            (name, value)
+            for name, value in headers
+            if not name.lower().startswith(b"access-control-")
+        ]
+        self.entries[path] = CachedResponse(time.monotonic() + self.seconds, response_headers, body)
         self.entries.move_to_end(path)
         while len(self.entries) > self.capacity:
             self.entries.popitem(last=False)

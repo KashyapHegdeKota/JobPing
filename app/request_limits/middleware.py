@@ -79,7 +79,10 @@ class RequestLimitMiddleware:
 
         # One API worker is the existing deployment contract. Reject immediately,
         # rather than queueing thousands of requests behind database concurrency.
-        if self.active_http >= 32 and limiter.settings.mode == "enforce":
+        if (
+            self.active_http >= limiter.settings.http_concurrency
+            and limiter.settings.mode == "enforce"
+        ):
             await reject(scope, receive, send, 503)
             return
         self.active_http += 1
@@ -107,7 +110,9 @@ class RequestLimitMiddleware:
             return
         cached = self.cache.get(scope["path"])
         if cached:
-            await send({"type": "http.response.start", "status": 200, "headers": cached.headers})
+            await send(
+                {"type": "http.response.start", "status": 200, "headers": list(cached.headers)}
+            )
             await send({"type": "http.response.body", "body": cached.body})
             return
         start: Message | None = None
