@@ -6,9 +6,19 @@
 
 ## In Progress
 
-No in-progress backlog items.
+### API-ABUSE-001 Protect authentication, refreshes and live feeds
+
+- Implementation in progress on `codex/request-abuse-protection`; see the architecture and acceptance criteria below. Coordinate backend/proxy and sibling UI changes, isolated tests and at least 40 focused commits across both repositories. Hosting/provider rollout remains separate.
 
 ## Ready
+
+### API-ABUSE-001 Protect authentication, refreshes and live feeds
+
+- Architecture planning complete; implementation underway. User confirmed browser reloads, feed/filter requests and live-feed reconnects are all in scope. See `docs/request-abuse-protection.md`.
+- Add Nginx admission/connection guards, shared Redis IP/verified-UID quotas, expiring WebSocket/SSE leases, explicit outage behavior, CORS-visible 429 cooldowns and bounded public caching. Reject before Firebase verification/database work; preserve ingestion Redis state and notification/webhook contracts.
+- Authentication currently calls Firebase directly. Use provider protection and evaluate Identity Platform reCAPTCHA audit/enforcement; a UI timer or API preflight cannot enforce login quotas. Verify provider configuration/costs before rollout.
+- Coordinate Vercel page rules, an upstream Oracle API DDoS boundary with origin bypass prevention, and sibling UI cooldown/reconnect changes. Initial quotas are provisional; shadow traffic and isolated load tests must establish safe shared-network/global capacity.
+- Acceptance: deterministic and isolated Redis regressions, full required repository checks, reload/filter/multi-tab/shared-network coverage, stream cleanup/outage tests, provider compatibility and staged enforcement with rollback. No production/account configuration changed during planning.
 
 ### INGEST-PORTALS-001 Cover selected companies beyond Greenhouse/Lever
 
