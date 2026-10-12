@@ -2,10 +2,11 @@
 
 from fastapi import APIRouter
 
-from app.api.v1 import analytics, companies, jobs, sse, stats, ws
+from app.api.v1 import analytics, companies, health, jobs, sse, stats, ws
 from app.notifications.api import router as notifications_router
 
 router = APIRouter(prefix="/api/v1")
+router.include_router(health.router)
 router.include_router(jobs.router)
 router.include_router(companies.router)
 router.include_router(stats.router)

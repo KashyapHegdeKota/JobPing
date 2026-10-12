@@ -556,3 +556,25 @@ CI matrix, coverage reports, and remaining browser-agent release gates.
   command; otherwise the documented SQLite fallback is used.
 - **Dependencies or commands are missing:** run `poetry install --with dev`, then prefix project
   tools with `poetry run`.
+
+## Incoming request protection
+
+The API supports shared Redis quotas for IPs and verified users, global admission,
+WebSocket/SSE connection leases, bounded public reference caching and HTTP 429
+cooldowns. This is separate from outgoing scraper throttling. No schema migration
+is needed, and ingestion/notification state is not reset.
+
+Request protection defaults to `off` for existing local installations. Copy reviewed
+settings from `deploy/request-limits.env.example` into the server environment,
+provide a server-only `REQUEST_LIMIT_SECRET` of at least 32 bytes, and start with
+`REQUEST_LIMIT_MODE=shadow`. Switch to `enforce` only after reviewing traffic and
+capacity. Enabled protection returns temporary 503 during Redis outages, including
+public reads; it never falls back to unlimited requests. `Retry-After` is exposed
+to allowed browser origins. Internal loopback `/api/v1/health` is the container
+readiness check; Nginx does not publish it.
+
+See [the architecture](docs/request-abuse-protection.md),
+[deployment instructions](docs/deployment.md#request-protection-rollout), and
+[authentication/edge rollout](docs/authentication-and-edge-protection.md).
+Firebase handles sign-in directly; provider-side protection and upstream DDoS
+mitigation require separate account/hosting configuration.

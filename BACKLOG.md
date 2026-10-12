@@ -6,12 +6,16 @@
 
 ## In Progress
 
-### EMAIL-THREAD-001 Group individual alerts in mail conversations
-
-- Implement a stable alert subject and opaque recipient/connection-scoped References header using Gmail's automated-message grouping contract. Keep job titles and explicit repost labels in the body; recaps and connection tests remain separate.
-- Verify isolation, frozen retries and existing delivery payload compatibility without live sends. Publish backend work to GitHub only; publish outstanding frontend launch records to GitHub and verify Vercel production.
+No in-progress backlog items.
 
 ## Ready
+
+### DEPLOY-ABUSE-001 Activate provider, edge and request protection
+
+- Implementation is complete in API-ABUSE-001 and sibling UI-ABUSE-001. Production and account settings remain unchanged; see `docs/deployment.md` and `docs/authentication-and-edge-protection.md`.
+- Stage Nginx dry-run and API shadow mode with a fresh server-only secret, deploy coordinated frontend/backend revisions, review shared-network traffic and set measured global capacity before enforcement. Defaults remain off in the API.
+- Activate reviewed Firebase/Identity Platform email/password protection and Vercel navigation rules; add/verify an upstream API DDoS boundary and prevent origin bypass while preserving the shared VM's other services and certificate renewal. Direct Firebase custom quotas cannot be enforced by a UI timer.
+- Validate allowed/denied CORS, reloads/filters/multiple tabs, provider callbacks, unsubscribe, WebSocket/SSE lifecycle and limiter outage/rollback. No schema migration, ingestion reset or live email test is required for this code release.
 
 ### INGEST-PORTALS-001 Cover selected companies beyond Greenhouse/Lever
 
@@ -53,6 +57,28 @@ No blocked backlog items.
 - Copy encrypted/protected database backups to independently hosted storage; current verified daily 14-day dumps reside on the same VM. Retain encryption keys separately.
 
 ## Recently Completed
+
+### API-ABUSE-001 Protect authentication, refreshes and live feeds
+
+- Completed: configurable Redis IP/global/verified-UID token buckets, pre-routing admission and private quota-before-SQL dependencies, deadline-bound owned resources/diagnostics, shared expiring stream leases, protected disconnect cleanup, inbound message/slow-send bounds, CORS-safe reference caching and stable cooldown responses. API defaults off; enabled enforcement fails closed on Redis outages.
+- Supplied staged Nginx request/connection guards, sanitized forwarding headers, cheap internal readiness and bounded Uvicorn settings. Coordinated UI handles Firebase throttles, duplicate actions, HTTP cooldowns, preserved data, reference coalescing and filter-independent jittered reconnects.
+- Validation: full local backend suite passes (900 passed, 24 opt-in skips), 85.98% branch-inclusive coverage; Ruff, Black and diff checks pass. Real isolated Redis concurrency/expiry/lease tests pass. Nginx syntax and local traffic acceptance pass, including 49 rate rejections, cooldown/CORS and forwarding sanitization. Disposable test Redis was stopped; developer/production services were not mutated.
+- GitHub: implementation revision `f194899` passed all eight backend checks, including Linux/Windows Python 3.12-3.14, 16 controlled browser cases and eight PostgreSQL/Redis/MCP cases. Frontend revision `af0928c` passed UI CI/security; 130 frontend tests, lint, types and production build pass.
+- Published 36 backend and 20 frontend focused task commits in draft PRs #41/#25. Architectural/rollout records and backlogs are updated. Production/provider/hosting activation remains in DEPLOY-ABUSE-001; code does not claim bandwidth-level DDoS mitigation or custom direct-Firebase login quotas.
+
+### EMAIL-THREAD-DEPLOY-001 Roll out conversation headers on Oracle
+
+- Deployed merged revision `fa06020` as `jobping-backend:threading-fa06020-20261009` through WSL SSH. Verified database backup and source archive retained; previous image tagged `jobping-backend:pre-threading-20261009`. Only API/scheduler/notifications recreated; PostgreSQL/Redis stayed running, with no migration or configuration change.
+- New-image preflight and deployed-container read-only checks rendered two real job occurrences with the same alert subject/reference and distinct job bodies. Test emails remain separate. Sending/discovery flags stay enabled, both recurring opt-in counts remain one, all 25 existing deliveries remain delivered, and no verification email/event was created.
+- Public HTTPS stats/feed, allowed/denied CORS, authentication, WebSocket ping/pong and SSE heartbeat pass. All application containers run the verified image with zero restarts; worker heartbeats have zero pending backlog and direct ATS polling completes without failures. Production retains 4,113 jobs and occurrences. Existing implementation validation remains 838 passed/22 opt-in skips plus all eight GitHub checks.
+- Deployment is complete; actual inbox grouping of the next newly rendered matching alerts remains a mail-client check. Existing frozen messages retain their original headers and Gmail conversation view must be enabled. Rollback and release records are in `docs/deployment.md`.
+
+### EMAIL-THREAD-001 Group individual alerts in mail conversations
+
+- New and repost alerts use the stable subject JobPing job alerts and an opaque References anchor scoped to subscriber, recipient, provider, sender and connection version. Individual job content and explicit repost labels remain in HTML/text. Recaps/tests stay separate; no schema or UI code change is required.
+- Existing frozen deliveries and retried headers remain unchanged. No Resend API ID is used as an SMTP message identity, and no unknown reply parent is fabricated. Gmail conversation view, one-week grouping and 100-message split limits are documented; other clients control their own grouping.
+- Validation: 45 notification tests and the full backend suite pass (838 passed, 22 opt-in skips); full Ruff/Black and whitespace checks pass. All eight GitHub PR checks passed for implementation revision `8f9114c`, including Linux/Windows, controlled browser and isolated PostgreSQL/Redis/MCP acceptance.
+- Published backend PR #39 with separate date-fix, production-launch and threading commits. The subsequently authorized Oracle rollout is completed in EMAIL-THREAD-DEPLOY-001; two newly rendered Gmail inbox alerts remain a mail-client check. Frontend PR #23 was merged and production main `4aedeec` is Ready on Vercel (`BH7fDqoverRTnrKMhmjYA6zAtGyY`) after retrying an initial Git metadata retrieval failure.
 
 ### EMAIL-LIVE-001 Verify and enable production delivery
 

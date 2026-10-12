@@ -11,4 +11,4 @@ COPY alembic.ini ./
 COPY examples/ats_sources.tech_companies.json ./examples/ats_sources.tech_companies.json
 RUN useradd --uid 10001 --create-home jobping
 USER jobping
-CMD ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8020", "--proxy-headers", "--forwarded-allow-ips", "127.0.0.1"]
+CMD ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8020", "--proxy-headers", "--forwarded-allow-ips", "127.0.0.1", "--ws-max-size", "4096", "--ws-max-queue", "8", "--backlog", "128"]

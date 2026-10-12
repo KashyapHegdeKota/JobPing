@@ -180,6 +180,30 @@ using injected HTTP transports; no live keys or developer database mutation.
 
 ## Resource lifecycle and Windows
 
+`app/request_limits/` owns incoming API protection, separate from scraper waits.
+Pure ASGI IP/global admission precedes verification, parsing and SQL; private
+routes use `private_db` and cached `limited_identity` to enforce verified UID
+quotas before session creation. Never trust browser-supplied UIDs or forwarding
+headers. Uvicorn trusts only loopback Nginx, which overwrites forwarding headers;
+any upstream DDoS proxy must be explicitly trusted at Nginx. IPv6 addresses share
+a /64 quota; mapped IPv4 uses its canonical IPv4 identity.
+
+Redis counters/connection leases use `jobping:ratelimit:v1:` and HMAC identities.
+Do not touch ingestion Redis keys or eviction policy. The API lifespan owns a
+separate bounded Redis pool and diagnostics task. Both WebSocket and SSE reserve,
+renew and release shared expiring leases; lease loss closes enforced streams
+before uncounted connections remain alive. Sending to slow clients is bounded.
+Keep the one-worker deployment contract until event fan-out is redesigned.
+
+`REQUEST_LIMIT_MODE` defaults off; shadow observes and enforce rejects. Enabled
+enforcement fails closed with 503 when Redis admission is unavailable. Only the
+dedicated loopback health route bypasses admission; public stats does not. CORS
+must wrap rejections and expose Retry-After. Cached reference responses are small,
+bounded, anonymous companies/stats only; hits still spend quota. Never cache private
+responses or interpret a 429/503 as an empty successful job feed. Firebase-native
+login protection and hosting/DDoS rules need operator activation; UI timers or
+preflight checks cannot enforce direct Firebase attempt quotas.
+
 Production deployment uses `deploy/compose.production.yml` on the Oracle ARM64 VM
 behind Nginx/Certbot. Host networking accommodates the existing VM routing; API,
 PostgreSQL and Redis must bind only loopback on 8020/5543/6381. Secrets live outside

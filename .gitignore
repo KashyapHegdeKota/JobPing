@@ -7,6 +7,7 @@ __pycache__/
 .ruff_cache/
 .poetry-cache/
 .pytest-tmp/
+.pytest-tmp-abuse-*/
 .tmp-ci-*/
 
 # Virtual environments

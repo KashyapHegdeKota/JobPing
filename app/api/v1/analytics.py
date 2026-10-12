@@ -13,7 +13,6 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.api.deps import get_db
 from app.db.models import (
     AnalyticsEvent,
     Base,
@@ -24,11 +23,12 @@ from app.db.models import (
     JobPosting,
     Subscriber,
 )
-from app.notifications.security import Identity, identity
+from app.notifications.security import Identity
+from app.request_limits.dependencies import limited_identity, private_db
 
 router = APIRouter(prefix="/analytics", tags=["analytics"])
-DB = Annotated[AsyncSession, Depends(get_db)]
-Who = Annotated[Identity, Depends(identity)]
+DB = Annotated[AsyncSession, Depends(private_db)]
+Who = Annotated[Identity, Depends(limited_identity)]
 Days = Annotated[int, Query(ge=1, le=90)]
 
 
