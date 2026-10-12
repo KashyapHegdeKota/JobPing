@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import suppress
 from typing import Any
 
 from fastapi import WebSocket
@@ -49,8 +50,12 @@ class ConnectionManager:
         if not connections:
             return 0
 
+        async def bounded_send(connection: WebSocket) -> None:
+            async with asyncio.timeout(5):
+                await connection.send_json(message)
+
         results = await asyncio.gather(
-            *(connection.send_json(message) for connection in connections),
+            *(bounded_send(connection) for connection in connections),
             return_exceptions=True,
         )
         failed = {
@@ -67,6 +72,9 @@ class ConnectionManager:
                         "Dropping WebSocket after broadcast failure: %s",
                         type(result).__name__,
                     )
+                    with suppress(Exception):
+                        async with asyncio.timeout(1):
+                            await connection.close(code=1013)
         return len(connections) - len(failed)
 
 

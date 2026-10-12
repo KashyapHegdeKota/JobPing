@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, cast
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from app.api.v1.websocket_manager import ConnectionManager
@@ -79,3 +80,22 @@ async def test_broadcast_evicts_only_failed_connections() -> None:
     assert manager.active_count == 1
     assert await manager.broadcast_json({"version": 2}) == 1
     assert healthy.messages == [{"version": 1}, {"version": 2}]
+
+
+async def test_slow_socket_is_closed_and_removed() -> None:
+    manager = ConnectionManager()
+    socket = FakeWebSocket()
+    socket.close = AsyncMock()
+    await manager.connect(as_websocket(socket))
+
+    async def stalled(message: object) -> None:
+        await asyncio.Event().wait()
+
+    socket.send_json = stalled
+    real_timeout = asyncio.timeout
+    with patch(
+        "app.api.v1.websocket_manager.asyncio.timeout", side_effect=lambda _: real_timeout(0.01)
+    ):
+        assert await manager.broadcast_json({"type": "JOB_UPDATED"}) == 0
+    assert manager.active_count == 0
+    socket.close.assert_awaited_once_with(code=1013)
