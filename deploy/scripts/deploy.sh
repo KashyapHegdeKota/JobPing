@@ -118,8 +118,10 @@ restore_workers() {
 }
 failure() {
     local result=$1
-    trap - ERR INT TERM
+    trap - ERR INT TERM HUP
     log "FAILED color=$TARGET previous=$PREVIOUS traffic_changed=$SWITCHED (database is never downgraded)" >&2
+    # Read-only/preflight failures must not clear another operation's recovery journal.
+    if [[ $TARGET_TOUCHED != true && $SWITCHED != true && $WORKERS_TOUCHED != true ]]; then exit "$result"; fi
     local restored=true
     if [[ $SWITCHED == true ]]; then
         if [[ $PREVIOUS != none ]] && wait_ready "$PREVIOUS" && switch_proxy "$PREVIOUS" && wait_ready "$PREVIOUS" proxy; then
@@ -160,16 +162,18 @@ status() {
 }
 cleanup() {
     # Only this application's labeled, unreferenced image IDs. Docker refuses IDs in use.
-    local protected="" color image id
+    local protected="" color id
     for color in blue green legacy workers; do
-        [[ ! -f $STATE/$color.env ]] || protected+=" $(meta "$color" IMAGE)"
+        if [[ -f $STATE/$color.env ]]; then
+            id=$(docker image inspect -f '{{.Id}}' "$(meta "$color" IMAGE)") || return 1
+            protected+=" $id"
+        fi
     done
-    while IFS= read -r image; do
-        [[ -n $image && $image != '<none>:<none>' ]] || continue
-        [[ " $protected " != *" $image "* ]] || continue
-        id=$(docker image inspect -f '{{.Id}}' "$image")
-        if [[ -z $(docker ps -aq --filter "ancestor=$id") ]]; then docker image rm "$image" || true; fi
-    done < <(docker image ls --filter 'label=org.opencontainers.image.source=https://github.com/KashyapHegdeKota/JobPing' --format '{{.Repository}}:{{.Tag}}')
+    while IFS= read -r id; do
+        [[ -n $id ]] || continue
+        [[ " $protected " != *" $id "* ]] || continue
+        if [[ -z $(docker ps -aq --filter "ancestor=$id") ]]; then docker image rm "$id" || true; fi
+    done < <(docker image ls --no-trunc --filter 'label=org.opencontainers.image.source=https://github.com/KashyapHegdeKota/JobPing' --format '{{.ID}}' | sort -u)
 }
 command=${1:-}; shift || true
 case $command in

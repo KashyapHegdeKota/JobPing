@@ -10,10 +10,13 @@ docker run -d --name "$prefix-pg" --network host -e POSTGRES_USER=test -e POSTGR
     -e POSTGRES_DB=jobping_image postgres:16-alpine postgres -p 15443 -c listen_addresses=127.0.0.1 >/dev/null
 docker run -d --name "$prefix-redis" --network host redis:7-alpine \
     redis-server --bind 127.0.0.1 --port 16381 >/dev/null
+ready=false
 for ((i=0; i<30; i++)); do
-    if docker exec "$prefix-pg" pg_isready -p 15443 -U test >/dev/null; then break; fi
+    # TCP excludes PostgreSQL's temporary Unix-only initialization server.
+    if docker exec "$prefix-pg" pg_isready -h 127.0.0.1 -p 15443 -U test >/dev/null; then ready=true; break; fi
     sleep 1
 done
+if [[ $ready != true ]]; then docker logs --tail 80 "$prefix-pg"; exit 1; fi
 envs=(-e DATABASE_URL=postgresql+psycopg://test:test-only@127.0.0.1:15443/jobping_image \
     -e REDIS_URL=redis://127.0.0.1:16381/0 -e NOTIFICATIONS_SEND_ENABLED=false -e APP_COLOR=blue)
 docker run --rm --network host "${envs[@]}" "$image" alembic upgrade head

@@ -24,14 +24,25 @@ with (root/'calls').open('a') as stream: stream.write(name+' '+' '.join(args)+'\
 fail = os.environ.get('FAIL', '')
 if name == 'docker':
     if args[:2] == ['image', 'inspect']:
+        if '{{.Id}}' in args: print('sha256:'+'a'*64); sys.exit(0)
         print(os.environ.get('FAKE_SHA', '1'*40)); sys.exit(0)
-    if args[0] == 'inspect': print('healthy' if fail != 'worker' else 'unhealthy'); sys.exit(0)
+    if args[:2] == ['image', 'ls'] and os.environ.get('SIMULATE_CLEANUP') == '1':
+        print('sha256:'+'a'*64); print('sha256:'+'b'*64); sys.exit(0)
+    if args[0] == 'inspect':
+        generation = (root/'worker-sha').read_text()
+        unhealthy = fail == 'worker' and generation == os.environ['FAKE_SHA']
+        print('unhealthy' if unhealthy else 'healthy')
+        sys.exit(0)
     if args[0] == 'compose':
         project = args[args.index('-p')+1]
+        if 'ps' in args and fail == 'status': sys.exit(1)
         if 'run' in args and fail == 'migration': sys.exit(1)
         if 'up' in args and project != 'jobping-workers' and fail == 'startup': sys.exit(1)
         if 'up' in args and project in ('jobping-blue','jobping-green'):
             (root/project).write_text(os.environ['FAKE_SHA'])
+        if 'up' in args and project == 'jobping-workers':
+            config = pathlib.Path(args[args.index('-f')+1])
+            (root/'worker-sha').write_text(config.parent.parent.name)
         if 'ps' in args and '--status' not in args and project == 'jobping-workers': print('worker')
 elif name == 'nginx':
     # First validation can fail; recovery validation may succeed.
@@ -217,3 +228,39 @@ def test_image_label_must_match_requested_commit(environment: dict[str, str]) ->
     )
     assert result.returncode != 0 and "label mismatch" in result.stderr
     assert current(environment) == "none"
+
+
+def test_interrupted_cutover_recovers_previous_and_standby(environment: dict[str, str]) -> None:
+    seed(environment)
+    assert command(environment, "deploy", SHA2, DIGEST).returncode == 0
+    root = Path(environment["JOBPING_ROOT"])
+    state = root / "state"
+    shutil.copyfile(state / "blue.env", state / "target-before.env")
+    shutil.copyfile(state / "workers.env", state / "workers-before.env")
+    (state / "blue.env").write_text((state / "blue.env").read_text().replace(SHA1, SHA3))
+    (state / "active-color").write_text("blue\n")
+    (state / "pending").write_text("PREVIOUS=green\nTARGET=blue\n")
+    (root / "proxy").write_text("blue")
+    result = command(environment, "recover")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert current(environment) == "green"
+    assert not (state / "pending").exists()
+    assert f"COMMIT_SHA={SHA1}" in (state / "blue.env").read_text()
+    assert f"COMMIT_SHA={SHA2}" in (state / "workers.env").read_text()
+
+
+def test_cleanup_preserves_immutable_active_image(environment: dict[str, str]) -> None:
+    environment["SIMULATE_CLEANUP"] = "1"
+    seed(environment)
+    calls = (Path(environment["JOBPING_ROOT"]) / "calls").read_text()
+    assert "docker image rm sha256:" + "b" * 64 in calls
+    assert "docker image rm sha256:" + "a" * 64 not in calls
+
+
+def test_status_failure_cannot_discard_recovery_journal(environment: dict[str, str]) -> None:
+    seed(environment)
+    root = Path(environment["JOBPING_ROOT"])
+    journal = root / "state/pending"
+    journal.write_text("PREVIOUS=blue\nTARGET=green\n")
+    assert command(environment, "status", fail="status").returncode != 0
+    assert journal.exists()

@@ -185,3 +185,27 @@ rollback to blue. It needs no production VM or network. CI additionally executes
 the real production image against disposable PostgreSQL/Redis and all existing
 browser/service/migration checks. Windows skips Linux-controller tests; probe
 and scheduler regressions run on every supported platform.
+
+## October 12 rollout verification
+
+PR #42 merged after every required check passed. Default-branch CI run
+`38303334711` tested merged commit `60b877a179c1a939d4037ed4bc5a4909e736f9c6`,
+verified/published its ARM64 image and automatically activated blue using digest
+`sha256:75db9c9ba880bcf846daf04ac5bbd15006a1a9e8118a2401a49af36305774c64`.
+Direct/proxy readiness and exact-version checks passed. Public HTTPS/feed, allowed
+and denied CORS, unauthenticated private-route rejection, WebSocket ping/pong and
+SSE frames passed. Sixty continuous public feed probes succeeded with an open
+WebSocket. Live rollback to the retained legacy API and back to blue succeeded
+without rebuilding or running migrations. Both shared services retained their
+October 9 start times and zero restarts; exactly one scheduler and one notification
+worker generation ran after each handoff. Sending settings and opt-ins were retained.
+
+The existing backup timer had failed with `203/EXEC` since October 10 because the
+old deployed shell script contained CRLF. Scripts now have LF checkout rules and
+the service invokes its root-owned controller script explicitly through `/bin/sh`.
+The repaired timer produced verified dump `20261012T201121Z.dump`. Off-server
+storage remains a separate recovery requirement. The noncritical cleanup warning
+seen during the legacy rollback was corrected by protecting/removing image IDs,
+which also handles digest-only images with no tag. Status errors cannot discard
+a pending recovery journal. Use `/version` and controller `status` for the current
+release rather than treating this historical rollout record as live state.
