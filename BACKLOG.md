@@ -6,19 +6,16 @@
 
 ## In Progress
 
-### API-ABUSE-001 Protect authentication, refreshes and live feeds
-
-- Implementation in progress on `codex/request-abuse-protection`; see the architecture and acceptance criteria below. Coordinate backend/proxy and sibling UI changes, isolated tests and at least 40 focused commits across both repositories. Hosting/provider rollout remains separate.
+No in-progress backlog items.
 
 ## Ready
 
-### API-ABUSE-001 Protect authentication, refreshes and live feeds
+### DEPLOY-ABUSE-001 Activate provider, edge and request protection
 
-- Architecture planning complete; implementation underway. User confirmed browser reloads, feed/filter requests and live-feed reconnects are all in scope. See `docs/request-abuse-protection.md`.
-- Add Nginx admission/connection guards, shared Redis IP/verified-UID quotas, expiring WebSocket/SSE leases, explicit outage behavior, CORS-visible 429 cooldowns and bounded public caching. Reject before Firebase verification/database work; preserve ingestion Redis state and notification/webhook contracts.
-- Authentication currently calls Firebase directly. Use provider protection and evaluate Identity Platform reCAPTCHA audit/enforcement; a UI timer or API preflight cannot enforce login quotas. Verify provider configuration/costs before rollout.
-- Coordinate Vercel page rules, an upstream Oracle API DDoS boundary with origin bypass prevention, and sibling UI cooldown/reconnect changes. Initial quotas are provisional; shadow traffic and isolated load tests must establish safe shared-network/global capacity.
-- Acceptance: deterministic and isolated Redis regressions, full required repository checks, reload/filter/multi-tab/shared-network coverage, stream cleanup/outage tests, provider compatibility and staged enforcement with rollback. No production/account configuration changed during planning.
+- Implementation is complete in API-ABUSE-001 and sibling UI-ABUSE-001. Production and account settings remain unchanged; see `docs/deployment.md` and `docs/authentication-and-edge-protection.md`.
+- Stage Nginx dry-run and API shadow mode with a fresh server-only secret, deploy coordinated frontend/backend revisions, review shared-network traffic and set measured global capacity before enforcement. Defaults remain off in the API.
+- Activate reviewed Firebase/Identity Platform email/password protection and Vercel navigation rules; add/verify an upstream API DDoS boundary and prevent origin bypass while preserving the shared VM's other services and certificate renewal. Direct Firebase custom quotas cannot be enforced by a UI timer.
+- Validate allowed/denied CORS, reloads/filters/multiple tabs, provider callbacks, unsubscribe, WebSocket/SSE lifecycle and limiter outage/rollback. No schema migration, ingestion reset or live email test is required for this code release.
 
 ### INGEST-PORTALS-001 Cover selected companies beyond Greenhouse/Lever
 
@@ -60,6 +57,14 @@ No blocked backlog items.
 - Copy encrypted/protected database backups to independently hosted storage; current verified daily 14-day dumps reside on the same VM. Retain encryption keys separately.
 
 ## Recently Completed
+
+### API-ABUSE-001 Protect authentication, refreshes and live feeds
+
+- Completed: configurable Redis IP/global/verified-UID token buckets, pre-routing admission and private quota-before-SQL dependencies, deadline-bound owned resources/diagnostics, shared expiring stream leases, protected disconnect cleanup, inbound message/slow-send bounds, CORS-safe reference caching and stable cooldown responses. API defaults off; enabled enforcement fails closed on Redis outages.
+- Supplied staged Nginx request/connection guards, sanitized forwarding headers, cheap internal readiness and bounded Uvicorn settings. Coordinated UI handles Firebase throttles, duplicate actions, HTTP cooldowns, preserved data, reference coalescing and filter-independent jittered reconnects.
+- Validation: full local backend suite passes (900 passed, 24 opt-in skips), 85.98% branch-inclusive coverage; Ruff, Black and diff checks pass. Real isolated Redis concurrency/expiry/lease tests pass. Nginx syntax and local traffic acceptance pass, including 49 rate rejections, cooldown/CORS and forwarding sanitization. Disposable test Redis was stopped; developer/production services were not mutated.
+- GitHub: implementation revision `f194899` passed all eight backend checks, including Linux/Windows Python 3.12-3.14, 16 controlled browser cases and eight PostgreSQL/Redis/MCP cases. Frontend revision `af0928c` passed UI CI/security; 130 frontend tests, lint, types and production build pass.
+- Published 36 backend and 20 frontend focused task commits in draft PRs #41/#25. Architectural/rollout records and backlogs are updated. Production/provider/hosting activation remains in DEPLOY-ABUSE-001; code does not claim bandwidth-level DDoS mitigation or custom direct-Firebase login quotas.
 
 ### EMAIL-THREAD-DEPLOY-001 Roll out conversation headers on Oracle
 
