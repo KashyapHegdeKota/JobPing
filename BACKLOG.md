@@ -58,6 +58,22 @@ No blocked backlog items.
 
 ## Recently Completed
 
+### AUTH-REMEMBER-001 Remember returning signed-in users
+
+- Completed in sibling UI-AUTH-002: Google/email sign-in and sign-up
+  explicitly persist sessions across browser restarts and multi-day returns.
+  Homepage/workspace recognize restored accounts before offering login;
+  returning users get account/feed links and explicit sign-out remains available.
+- Firebase manages persistence and token refresh with no automatic two-day
+  logout. Backend verified/revoked-token checks remain intact; no API, schema,
+  provider settings or account preferences changed. Frontend rollout is pending.
+- Working-tree validation: 146 UI tests, lint, standalone types and production build pass.
+  Real SDK/mocked HTTP regression restores a session three days later, refreshes
+  its expired token and verifies sign-out survives another restart.
+- Backend full default suite passes (954 passed, 30 opt-in skips); full Ruff,
+  Black and diff checks pass. Initial standard-temp-root fixture errors required
+  a fresh gitignored private test directory for the successful isolated rerun.
+
 ### DEPLOY-BG-001 Exact-commit blue-green production delivery
 
 - Reused the full Linux/Windows/browser/service CI gate, then verified one native ARM64 image against disposable PostgreSQL/Redis before SHA-tag publication and digest-pinned deployment. Default `master` and future `main` are supported; deployment locks/concurrency and pinned SSH host verification are enforced.
