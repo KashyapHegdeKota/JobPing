@@ -73,6 +73,9 @@ No blocked backlog items.
 - Backend full default suite passes (954 passed, 30 opt-in skips); full Ruff,
   Black and diff checks pass. Initial standard-temp-root fixture errors required
   a fresh gitignored private test directory for the successful isolated rerun.
+- Published on `codex/remember-login` in [frontend PR #26](https://github.com/KashyapHegdeKota/JobPing-ui/pull/26)
+  and [backend backlog PR #44](https://github.com/KashyapHegdeKota/JobPing/pull/44).
+  Draft review and GitHub checks are in progress; production rollout remains pending.
 
 ### DEPLOY-BG-001 Exact-commit blue-green production delivery
 
