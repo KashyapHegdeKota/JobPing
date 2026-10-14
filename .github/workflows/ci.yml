@@ -161,7 +161,8 @@ jobs:
           export JOBPING_IMAGE=ghcr.io/kashyaphegdekota/jobping:${GITHUB_SHA}
           export JOBPING_COLOR=blue JOBPING_PORT=8001
           docker compose -p jobping-blue -f deploy/compose.api.yml config --quiet
-          docker compose -p jobping-workers -f deploy/compose.workers.yml --profile notifications config --quiet
+          docker compose -p jobping-workers -f deploy/compose.workers.yml --profile notifications --profile evidence config --quiet
+          JOBPING_RENDERER_IMAGE=sha256:$(printf 'a%.0s' {1..64}) docker compose -f deploy/compose.evidence.yml config --quiet
           docker compose -f deploy/compose.infra.yml config --quiet
 
   production-image:

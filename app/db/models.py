@@ -25,6 +25,66 @@ class Base(DeclarativeBase):
     """Declarative base shared by all JobPing ORM models."""
 
 
+class ScreeningProfile(Base):
+    __tablename__ = "screening_profiles"
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    requirements: Mapped[dict] = mapped_column(JSON, nullable=False)
+    revision: Mapped[int] = mapped_column(default=1, nullable=False)
+
+
+class EvidenceCheck(Base):
+    """One coalescing durable queue slot and verification projection per occurrence."""
+
+    __tablename__ = "evidence_checks"
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("job_occurrences.id", ondelete="CASCADE"), primary_key=True
+    )
+    target: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="queued")
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    lease_token: Mapped[str | None] = mapped_column(String(36))
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    projection: Mapped[dict | None] = mapped_column(JSON)
+    document_ids: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    ingestion_checksums: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    error_code: Mapped[str | None] = mapped_column(String(64))
+    attempts: Mapped[int] = mapped_column(default=0, nullable=False)
+    __table_args__ = (Index("ix_evidence_checks_queue", "status", "available_at"),)
+
+
+class EvidenceDocument(Base):
+    """Bounded public text only; never application values or hidden controls."""
+
+    __tablename__ = "evidence_documents"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("job_occurrences.id", ondelete="CASCADE"), nullable=False
+    )
+    source_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    final_url: Mapped[str] = mapped_column(String(2048), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)
+    extraction_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    facts: Mapped[dict] = mapped_column(JSON, nullable=False)
+    spans: Mapped[list] = mapped_column(JSON, nullable=False)
+    role_identity: Mapped[dict] = mapped_column(JSON, nullable=False)
+    complete: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    __table_args__ = (
+        UniqueConstraint(
+            "occurrence_id",
+            "source_url",
+            "checksum",
+            "extraction_version",
+            name="uq_evidence_document_revision",
+        ),
+    )
+
+
 class AnalyticsEvent(Base):
     """Bounded first-party activity attributed only to a verified server identity."""
 

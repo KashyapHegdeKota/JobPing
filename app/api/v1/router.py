@@ -3,6 +3,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import analytics, companies, health, jobs, sse, stats, ws
+from app.evidence.api import router as evidence_router
 from app.notifications.api import router as notifications_router
 
 router = APIRouter(prefix="/api/v1")
@@ -14,5 +15,6 @@ router.include_router(ws.router)
 router.include_router(sse.router)
 router.include_router(notifications_router)
 router.include_router(analytics.router)
+router.include_router(evidence_router)
 
 __all__ = ["router"]

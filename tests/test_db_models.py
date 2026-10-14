@@ -34,6 +34,9 @@ class DatabaseModelsTestCase(unittest.TestCase):
             {
                 "companies",
                 "analytics_events",
+                "screening_profiles",
+                "evidence_checks",
+                "evidence_documents",
                 "job_postings",
                 "job_occurrences",
                 "job_source_observations",

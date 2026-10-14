@@ -1,0 +1,26 @@
+# Independent secret-free renderer. Pin to the reviewed native ARM64 image ID/digest.
+services:
+  renderer:
+    image: ${JOBPING_RENDERER_IMAGE:?immutable renderer image required}
+    container_name: jobping-evidence-renderer
+    restart: unless-stopped
+    init: true
+    ports: ["127.0.0.1:8031:8031"]
+    networks: [evidence]
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    mem_limit: 1g
+    pids_limit: 256
+    shm_size: 256m
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8031/health', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 30s
+    logging:
+      options: {max-size: "10m", max-file: "3"}
+networks:
+  evidence:
+    external: true
+    name: jobping-evidence

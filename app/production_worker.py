@@ -24,6 +24,11 @@ async def run(role: str) -> None:
             from app.notifications.worker import serve
 
             task = asyncio.create_task(serve())
+        elif role == "evidence":
+            from app.evidence.worker import serve
+
+            task = asyncio.create_task(serve())
+            loop.add_signal_handler(signal.SIGTERM, task.cancel)
         else:
             sources = cli.load_ats_sources(
                 Path(os.environ["ATS_SOURCES_FILE"]) if os.environ.get("ATS_SOURCES_FILE") else None
@@ -48,8 +53,13 @@ async def run(role: str) -> None:
                 (directory / f"{role}.heartbeat").write_text(str(time.time()), encoding="ascii")
                 await asyncio.wait({task}, timeout=5)
             await task
+        except asyncio.CancelledError:
+            if role != "evidence":
+                raise
         finally:
             loop.remove_signal_handler(signal.SIGINT)
+            if role == "evidence":
+                loop.remove_signal_handler(signal.SIGTERM)
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
             (directory / f"{role}.heartbeat").unlink(missing_ok=True)
@@ -62,8 +72,8 @@ def main() -> None:
             Path(f"/run/jobping-workers/{role}.heartbeat").read_text(encoding="ascii")
         )
         raise SystemExit(0 if 0 <= age < 30 else 1)
-    if sys.argv[1:] not in (["scheduler"], ["notifications"]):
-        raise SystemExit("Expected scheduler, notifications or health")
+    if sys.argv[1:] not in (["scheduler"], ["notifications"], ["evidence"]):
+        raise SystemExit("Expected scheduler, notifications, evidence or health")
     asyncio.run(run(sys.argv[1]))
 
 

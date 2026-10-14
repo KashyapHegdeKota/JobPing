@@ -31,3 +31,13 @@ services:
     profiles: ["notifications"]
     environment: {JOBPING_WORKER: notifications}
     command: ["python", "-m", "app.production_worker", "notifications"]
+  evidence:
+    <<: *worker
+    container_name: jobping-evidence
+    profiles: ["evidence"]
+    environment: {JOBPING_WORKER: evidence}
+    command: ["python", "-m", "app.production_worker", "evidence"]
+    mem_limit: 512m
+    volumes:
+      - ${JOBPING_ROOT:-/srv/jobping}/worker-state:/run/jobping-workers
+      - /etc/jobping/evidence:/run/jobping-evidence:ro

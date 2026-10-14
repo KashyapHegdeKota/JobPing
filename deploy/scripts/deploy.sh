@@ -16,6 +16,7 @@ NGINX=${NGINX_CONFIG:-/etc/nginx/nginx.conf}
 ATTEMPTS=${READINESS_ATTEMPTS:-30}
 INTERVAL=${READINESS_INTERVAL:-2}
 NOTIFICATIONS=${NOTIFICATION_WORKER_ENABLED:-false}
+EVIDENCE=${EVIDENCE_WORKER_ENABLED:-false}
 STAGE=initialization TARGET=none PREVIOUS=none SWITCHED=false WORKERS_TOUCHED=false TARGET_TOUCHED=false
 mkdir -p "$STATE"
 exec 9>"$STATE/deploy.lock"
@@ -46,9 +47,16 @@ workers() {
     else
         local profiles=()
         if [[ $NOTIFICATIONS == true || $1 == stop || $1 == ps ]]; then profiles=(--profile notifications); fi
+        if supports_evidence "$file" && [[ $EVIDENCE == true || $1 == stop || $1 == ps ]]; then
+            profiles+=(--profile evidence)
+        fi
         JOBPING_IMAGE=$(get "$file" IMAGE) JOBPING_ROOT=$ROOT \
             docker compose -p jobping-workers -f "$(get "$file" RELEASE)/deploy/compose.workers.yml" "${profiles[@]}" "$@"
     fi
+}
+supports_evidence() {
+    [[ $(get "$1" COLOR) != legacy ]] &&
+        grep -q '^  evidence:' "$(get "$1" RELEASE)/deploy/compose.workers.yml"
 }
 smoke() {
     local color=$1 mode=${2:-direct} base; base="http://127.0.0.1:$(port "$color")"
@@ -86,6 +94,7 @@ write_metadata() {
 wait_workers() {
     local file=$1 expected=1; [[ $NOTIFICATIONS != true ]] || expected=2
     [[ $(get "$file" COLOR) != legacy ]] || return 0
+    if [[ $EVIDENCE == true ]] && supports_evidence "$file"; then expected=$((expected+1)); fi
     for ((attempt=1; attempt<=ATTEMPTS; attempt++)); do
         local ids healthy=0; ids=$(workers "$file" ps -q)
         while IFS= read -r id; do
