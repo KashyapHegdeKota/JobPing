@@ -77,6 +77,14 @@ No blocked backlog items.
 
 ## Recently Completed
 
+### CI-CACHE-001 Keep virtual environments tied to installed Python
+
+- The screening release exposed a cached Windows environment pointing to removed
+  Python 3.14.7 after the hosted runner installed 3.14.8. Use setup-python's resolved
+  full version in cache keys so patch upgrades cannot restore an unusable interpreter.
+- Evicted the stale master cache; the release's failed job requires a fresh rerun.
+  This changes CI caching only; application/deployment behavior is unchanged.
+
 ### AUTH-REMEMBER-001 Remember returning signed-in users
 
 - Completed locally in sibling UI-AUTH-002: Google/email sign-in and sign-up
