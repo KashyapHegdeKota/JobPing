@@ -1261,6 +1261,14 @@ def notifications_worker(once: bool = False) -> None:
     _asyncio_run(serve(once=once))
 
 
+@app.command("evidence-worker")
+def evidence_worker(once: bool = False) -> None:
+    """Verify public role evidence independently; EVIDENCE_WORKER_ENABLED defaults off."""
+    from app.evidence.worker import serve
+
+    _asyncio_run(serve(once=once))
+
+
 @app.command("notifications-preview")
 def notifications_preview(output: Path = Path(".pytest_cache/email-preview")) -> None:
     """Write synthetic HTML email previews without sending anything."""

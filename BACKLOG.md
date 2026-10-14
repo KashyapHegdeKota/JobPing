@@ -6,7 +6,26 @@
 
 ## In Progress
 
-No in-progress backlog items.
+### DISCOVERY-CHECK-001 Check sponsorship and base pay before applying
+
+- Resumed at the user's request; publication and production activation are authorized.
+  Release work is isolated from unrelated local edits. Checkpoints are saved in
+  `docs/evidence-implementation-handoff.md`.
+- Implemented occurrence snapshots, fenced durable checks, deterministic screening,
+  private account requirements, HTTP/rendering adapters and coordinated flagged UI.
+- Extends DISCOVERY-DETAILS-001; email matching and ingestion identity stay unchanged.
+- Validation: backend 978 passed / 35 opt-in skips, 85.25% coverage; 17 controlled
+  browser and 11 isolated PostgreSQL tests passed. UI 150 tests, lint/types and enabled
+  production build passed; desktop/390px phone review has no horizontal overflow.
+  Conditional/conflicting restrictions, exact-role content boundaries, structured-pay
+  support, concurrency/reposts and title freshness regressions pass. Fifty-role review
+  found eight supported pay positives; strict current retrieval remains conservative.
+  Native ARM64 browser/public HTTPS/private-address-denial acceptance passed.
+- Latest-base acceptance: 78 screening regressions and all 27 Linux controller tests
+  pass, including optional evidence-worker replacement/failure/older-release rollback.
+  Fresh verified production backup: `20261014T202353Z.dump`.
+- Remaining: latest-base full checks, GitHub CI
+  and staged production rollout with a fresh backup. Screening is not yet deployed.
 
 ## Ready
 
@@ -60,22 +79,26 @@ No blocked backlog items.
 
 ### AUTH-REMEMBER-001 Remember returning signed-in users
 
-- Completed in sibling UI-AUTH-002: Google/email sign-in and sign-up
+- Completed locally in sibling UI-AUTH-002: Google/email sign-in and sign-up
   explicitly persist sessions across browser restarts and multi-day returns.
   Homepage/workspace recognize restored accounts before offering login;
   returning users get account/feed links and explicit sign-out remains available.
 - Firebase manages persistence and token refresh with no automatic two-day
   logout. Backend verified/revoked-token checks remain intact; no API, schema,
-  provider settings or account preferences changed. Frontend rollout is pending.
-- Working-tree validation: 146 UI tests, lint, standalone types and production build pass.
+  provider settings or account preferences changed. Frontend production rollout
+  verified October 13: merged UI PR #26, revision `49c0296`, successful Vercel
+  Production deployment `7051619660`; jobping.website responds HTTP 200.
+- Validation: 146 UI tests, lint, standalone types and production build pass.
   Real SDK/mocked HTTP regression restores a session three days later, refreshes
   its expired token and verifies sign-out survives another restart.
 - Backend full default suite passes (954 passed, 30 opt-in skips); full Ruff,
   Black and diff checks pass. Initial standard-temp-root fixture errors required
   a fresh gitignored private test directory for the successful isolated rerun.
-- Published on `codex/remember-login` in [frontend PR #26](https://github.com/KashyapHegdeKota/JobPing-ui/pull/26)
+- Published from isolated `codex/remember-login` checkouts in [frontend PR #26](https://github.com/KashyapHegdeKota/JobPing-ui/pull/26)
   and [backend backlog PR #44](https://github.com/KashyapHegdeKota/JobPing/pull/44).
-  Draft review and GitHub checks are in progress; production rollout remains pending.
+  UI PR #26 is merged and its CI/security/Vercel checks pass; production deployment
+  succeeded. Backend PR #44 contains documentation only.
+  Original working-tree edits, including paused screening work, are preserved locally.
 
 ### DEPLOY-BG-001 Exact-commit blue-green production delivery
 

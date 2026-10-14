@@ -5,6 +5,7 @@ PRODUCTION_HOST=api.jobping.website
 UPSTREAM_FILE=/etc/nginx/jobping/upstream.conf
 NGINX_CONFIG=/etc/nginx/nginx.conf
 NOTIFICATION_WORKER_ENABLED=true
+EVIDENCE_WORKER_ENABLED=false
 READINESS_ATTEMPTS=30
 READINESS_INTERVAL=2
 # Set false on a new VM without legacy /opt/jobping containers.

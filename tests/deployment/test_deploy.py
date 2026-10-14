@@ -43,7 +43,10 @@ if name == 'docker':
         if 'up' in args and project == 'jobping-workers':
             config = pathlib.Path(args[args.index('-f')+1])
             (root/'worker-sha').write_text(config.parent.parent.name)
-        if 'ps' in args and '--status' not in args and project == 'jobping-workers': print('worker')
+            count = 1 + args.count('--profile')
+            (root/'worker-count').write_text(str(count))
+        if 'ps' in args and '--status' not in args and project == 'jobping-workers':
+            for index in range(int((root/'worker-count').read_text())): print('worker'+str(index))
 elif name == 'nginx':
     # First validation can fail; recovery validation may succeed.
     marker = root/'validation-failed'
@@ -95,6 +98,7 @@ def environment(tmp_path: Path) -> dict[str, str]:
         "READINESS_ATTEMPTS": "2",
         "READINESS_INTERVAL": "0",
         "NOTIFICATION_WORKER_ENABLED": "false",
+        "EVIDENCE_WORKER_ENABLED": "false",
     }
 
 
@@ -202,6 +206,35 @@ def test_worker_generation_is_stopped_before_replacement(environment: dict[str, 
         if "jobping-workers" in line and "up -d" in line
     )
     assert stop < start
+
+
+@pytest.mark.parametrize("failed_replacement", [False, True])
+def test_evidence_worker_handoff_and_older_release_restore(
+    environment: dict[str, str], failed_replacement: bool
+) -> None:
+    root = Path(environment["JOBPING_ROOT"])
+    old_compose = root / "releases" / SHA1 / "deploy/compose.workers.yml"
+    old_compose.write_text(old_compose.read_text().split("  evidence:")[0])
+    environment["EVIDENCE_WORKER_ENABLED"] = "true"
+    environment["NOTIFICATION_WORKER_ENABLED"] = "true"
+    seed(environment)
+    assert (root / "worker-count").read_text() == "2"
+    result = command(
+        environment, "deploy", SHA2, DIGEST, fail="worker" if failed_replacement else ""
+    )
+    if failed_replacement:
+        assert result.returncode != 0
+    else:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert (root / "worker-count").read_text() == "3"
+        result = command(environment, "rollback")
+        assert result.returncode == 0, result.stdout + result.stderr
+    assert current(environment) == "blue"
+    assert (root / "worker-count").read_text() == "2"
+    calls = (root / "calls").read_text().splitlines()
+    evidence_start = next(i for i, line in enumerate(calls) if "--profile evidence up -d" in line)
+    assert any(" stop --timeout " in line for line in calls[:evidence_start])
+    assert not (root / "state/pending").exists()
 
 
 def test_pending_cutover_blocks_new_deployment(environment: dict[str, str]) -> None:
