@@ -6,26 +6,7 @@
 
 ## In Progress
 
-### DISCOVERY-CHECK-001 Check sponsorship and base pay before applying
-
-- Resumed at the user's request; publication and production activation are authorized.
-  Release work is isolated from unrelated local edits. Checkpoints are saved in
-  `docs/evidence-implementation-handoff.md`.
-- Implemented occurrence snapshots, fenced durable checks, deterministic screening,
-  private account requirements, HTTP/rendering adapters and coordinated flagged UI.
-- Extends DISCOVERY-DETAILS-001; email matching and ingestion identity stay unchanged.
-- Validation: backend 978 passed / 35 opt-in skips, 85.25% coverage; 17 controlled
-  browser and 11 isolated PostgreSQL tests passed. UI 150 tests, lint/types and enabled
-  production build passed; desktop/390px phone review has no horizontal overflow.
-  Conditional/conflicting restrictions, exact-role content boundaries, structured-pay
-  support, concurrency/reposts and title freshness regressions pass. Fifty-role review
-  found eight supported pay positives; strict current retrieval remains conservative.
-  Native ARM64 browser/public HTTPS/private-address-denial acceptance passed.
-- Latest-base acceptance: 78 screening regressions and all 27 Linux controller tests
-  pass, including optional evidence-worker replacement/failure/older-release rollback.
-  Fresh verified production backup: `20261014T202353Z.dump`.
-- Remaining: latest-base full checks, GitHub CI
-  and staged production rollout with a fresh backup. Screening is not yet deployed.
+No in-progress backlog items.
 
 ## Ready
 
@@ -77,12 +58,38 @@ No blocked backlog items.
 
 ## Recently Completed
 
+### DISCOVERY-CHECK-001 Check sponsorship and base pay before applying
+
+- Completed and deployed October 14, 2026: [backend PR #45](https://github.com/KashyapHegdeKota/JobPing/pull/45),
+  coordinated [UI PR #27](https://github.com/KashyapHegdeKota/JobPing-ui/pull/27).
+  API revision `7e69249` is live through blue-green delivery; additive migration
+  `23aa3593570b`, optional evidence worker and isolated immutable renderer are healthy.
+  Vercel production `ETxS2SKEY996emR41YH57oL1Vbwo` enables screening on jobping.website.
+- Private requirements, server-counted buckets and pre-application evidence are live.
+  Unknown/conditional/conflicting or inaccessible sources remain Needs review. Initial
+  backfill runs in the background; unsupported employers require explicit reviewed
+  mappings and exact-role scope. Existing notification opt-ins/settings are preserved.
+- Validation: latest-base full suite 984 passed / 62 platform/opt-in skips, 84.80%
+  coverage; Ruff/Black, all 27 Linux controller simulations and all GitHub matrix,
+  browser/service/image/deployment gates pass. UI 150 tests, lint/types and enabled
+  build pass. Live signed-in profile/feed/dialog and desktop/390px mobile review pass
+  without horizontal overflow or browser warnings/errors. No account requirements
+  were changed for acceptance. Live API/evidence/auth/CORS/WebSocket/SSE pass.
+- Native ARM64 image/public HTTPS/private-destination/browser checks pass; live Figma
+  acceptance returned two role documents and supported pay evidence. Complete checks
+  and documents persist through the production worker. Fifty-role source review found
+  eight supported pay positives and no unsupported positive among those reviewed.
+- Fresh verified backup `20261014T202353Z.dump` preceded migration; shared PostgreSQL/
+  Redis and unrelated applications retained uptime. See `docs/pre-application-evidence.md`
+  for image pins, activation and rollback. Original unrelated local edits are preserved.
+
 ### CI-CACHE-001 Keep virtual environments tied to installed Python
 
 - The screening release exposed a cached Windows environment pointing to removed
   Python 3.14.7 after the hosted runner installed 3.14.8. Use setup-python's resolved
   full version in cache keys so patch upgrades cannot restore an unusable interpreter.
-- Evicted the stale master cache; the release's failed job requires a fresh rerun.
+- Evicted the stale master cache; the release rerun passed every gate and deployed.
+  The full-version cache change also passed every GitHub matrix/browser/service check.
   This changes CI caching only; application/deployment behavior is unchanged.
 
 ### AUTH-REMEMBER-001 Remember returning signed-in users

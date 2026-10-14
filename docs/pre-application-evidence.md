@@ -129,3 +129,40 @@ and disable/rebuild the UI flag
 to roll back; ordinary discovery, browsing and notifications continue. Keep the migration
 and history for recovery. Downgrade deletes evidence/profile tables and is a separate
 backed-up operator action. No production activation is required for local validation.
+
+## October 14 production acceptance
+
+Backend PR #45 merged as `7e69249c84740e998deb9ed2831fbed719b2e8d6`.
+GitHub run `38633101421` passed all test/image/deployment gates and activated green.
+A stale Windows cache referenced removed Python 3.14.7; evicting that cache allowed
+the exact unchanged release to pass on 3.14.8. The permanent full-version cache key
+is tracked in PR #46. Fresh verified backup `20261014T202353Z.dump` preceded migration.
+The shared PostgreSQL/Redis and unrelated services retained their existing uptime.
+
+Renderer source revision `a181c6ff735d35617e10e6f7014ab51d391973d4` was built natively
+on ARM64 and accepted with public pinned-IP HTTPS, private-address denial, read-only
+browser scope and no-secret assertions. Production is pinned to local immutable image
+`sha256:4bbbb721c3b504525bd664d9a21cefd54c7fe382340b4eb3a99358f3a65f36ef`.
+Root-owned config is `/etc/jobping/renderer.env`; Compose is retained at
+`/srv/jobping/renderer/a181c6f/compose.yml`. Its healthy loopback endpoint is 8031,
+with no mounts/env file and network `jobping-evidence` (`br-jpevidence`). The VM had
+missing Docker-owned firewall chains; only those chains were restored so Docker could
+create the dedicated network, without a daemon restart, policy changes or firewall
+flush. The prior rules are backed up at
+`/var/backups/jobping/evidence-network-before-20261014.rules`; task-owned orphan
+MASQUERADE rules from failed network attempts were removed individually.
+
+Both worker flags are enabled in backend/deployment configuration. The controller
+started exactly one healthy evidence worker alongside scheduler and notifications.
+Complete checks/documents persist, and live Figma acceptance returned two documents
+with supported pay evidence. Initial backfill proceeds in the background; unsupported
+employers, title/scope mismatches and retrieval failures remain review. No requirement
+or email preference changes, historical discoveries or test mail were created.
+
+UI PR #27 merged as `cb4966a6dce8f455e1fd41f8a417475b7f8ba866`. Vercel Production
+`NEXT_PUBLIC_SCREENING_ENABLED=true` was saved after backend acceptance; an uncached
+redeploy of that source, `ETxS2SKEY996emR41YH57oL1Vbwo`, is Ready on jobping.website.
+Live authenticated profile/feed/buckets/cached pre-application dialog pass. Desktop
+and 390px mobile review show no overflow or browser warnings/errors. Public/private
+API boundaries, allowed/denied CORS, WebSocket ping/pong and SSE frames pass. Existing
+Firebase remember-me restored the signed-in account without a new login.
