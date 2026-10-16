@@ -1,0 +1,43 @@
+x-worker: &worker
+  image: ${JOBPING_IMAGE:?immutable image required}
+  network_mode: host
+  env_file: ["${JOBPING_ENV_FILE:-/etc/jobping/backend.env}"]
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 180s
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: ["ALL"]
+  volumes:
+    - ${JOBPING_FIREBASE_DIR:-/etc/jobping/firebase}:/run/jobping:ro
+    - ${JOBPING_ROOT:-/srv/jobping}/worker-state:/run/jobping-workers
+  healthcheck:
+    test: ["CMD", "python", "-m", "app.production_worker", "health"]
+    interval: 10s
+    timeout: 5s
+    retries: 6
+    start_period: 20s
+  logging:
+    options: {max-size: "10m", max-file: "3"}
+
+services:
+  scheduler:
+    <<: *worker
+    container_name: jobping-scheduler
+    environment: {JOBPING_WORKER: scheduler}
+    command: ["python", "-m", "app.production_worker", "scheduler"]
+  notifications:
+    <<: *worker
+    container_name: jobping-notifications
+    profiles: ["notifications"]
+    environment: {JOBPING_WORKER: notifications}
+    command: ["python", "-m", "app.production_worker", "notifications"]
+  evidence:
+    <<: *worker
+    container_name: jobping-evidence
+    profiles: ["evidence"]
+    environment: {JOBPING_WORKER: evidence}
+    command: ["python", "-m", "app.production_worker", "evidence"]
+    mem_limit: 512m
+    volumes:
+      - ${JOBPING_ROOT:-/srv/jobping}/worker-state:/run/jobping-workers
+      - /etc/jobping/evidence:/run/jobping-evidence:ro

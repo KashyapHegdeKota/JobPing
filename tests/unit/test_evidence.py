@@ -84,6 +84,8 @@ def test_assertion_beside_question_and_future_scope() -> None:
     facts, _ = extract(document("Visa sponsorship is not available in the future."))
     assert "sponsorship" not in facts["policies"]
     assert facts["policies"]["future_sponsorship"]["value"] == "denied"
+    facts, _ = extract(document("We offer sponsorship to engineers building the future."))
+    assert "future_sponsorship" not in facts["policies"]
 
 
 def test_citizenship_is_separate_from_training_policy() -> None:

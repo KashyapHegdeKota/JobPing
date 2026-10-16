@@ -79,6 +79,40 @@ No blocked backlog items.
 - No cleanup, cloud publication, database/service changes or JobPing application edits.
   The inventory stays local; a launcher and rescan instructions are included.
 
+### DISCOVERY-CHECK-001 Check sponsorship and base pay before applying
+
+- Completed and deployed October 14, 2026: [backend PR #45](https://github.com/KashyapHegdeKota/JobPing/pull/45),
+  coordinated [UI PR #27](https://github.com/KashyapHegdeKota/JobPing-ui/pull/27).
+  API revision `7e69249` is live through blue-green delivery; additive migration
+  `23aa3593570b`, optional evidence worker and isolated immutable renderer are healthy.
+  Vercel production `ETxS2SKEY996emR41YH57oL1Vbwo` enables screening on jobping.website.
+- Private requirements, server-counted buckets and pre-application evidence are live.
+  Unknown/conditional/conflicting or inaccessible sources remain Needs review. Initial
+  backfill runs in the background; unsupported employers require explicit reviewed
+  mappings and exact-role scope. Existing notification opt-ins/settings are preserved.
+- Validation: latest-base full suite 984 passed / 62 platform/opt-in skips, 84.80%
+  coverage; Ruff/Black, all 27 Linux controller simulations and all GitHub matrix,
+  browser/service/image/deployment gates pass. UI 150 tests, lint/types and enabled
+  build pass. Live signed-in profile/feed/dialog and desktop/390px mobile review pass
+  without horizontal overflow or browser warnings/errors. No account requirements
+  were changed for acceptance. Live API/evidence/auth/CORS/WebSocket/SSE pass.
+- Native ARM64 image/public HTTPS/private-destination/browser checks pass; live Figma
+  acceptance returned two role documents and supported pay evidence. Complete checks
+  and documents persist through the production worker. Fifty-role source review found
+  eight supported pay positives and no unsupported positive among those reviewed.
+- Fresh verified backup `20261014T202353Z.dump` preceded migration; shared PostgreSQL/
+  Redis and unrelated applications retained uptime. See `docs/pre-application-evidence.md`
+  for image pins, activation and rollback. Original unrelated local edits are preserved.
+
+### CI-CACHE-001 Keep virtual environments tied to installed Python
+
+- The screening release exposed a cached Windows environment pointing to removed
+  Python 3.14.7 after the hosted runner installed 3.14.8. Use setup-python's resolved
+  full version in cache keys so patch upgrades cannot restore an unusable interpreter.
+- Evicted the stale master cache; the release rerun passed every gate and deployed.
+  The full-version cache change also passed every GitHub matrix/browser/service check.
+  This changes CI caching only; application/deployment behavior is unchanged.
+
 ### AUTH-REMEMBER-001 Remember returning signed-in users
 
 - Completed locally in sibling UI-AUTH-002: Google/email sign-in and sign-up
@@ -102,6 +136,14 @@ No blocked backlog items.
   succeeded. Backend PR #44 contains documentation only.
   Original working-tree edits, including paused screening work, are preserved locally.
 
+### DEPLOY-BG-001 Exact-commit blue-green production delivery
+
+- Reused the full Linux/Windows/browser/service CI gate, then verified one native ARM64 image against disposable PostgreSQL/Redis before SHA-tag publication and digest-pinned deployment. Default `master` and future `main` are supported; deployment locks/concurrency and pinned SSH host verification are enforced.
+- Adopted Oracle Nginx/Certbot and existing private configuration/shared infrastructure. First automatic release `60b877a` passed all CI/image/deployment jobs and became blue; live rollback to legacy and back to blue passed without a build/migration. PostgreSQL/Redis retained their original uptime and zero restarts; unrelated hosted applications and local edits were preserved.
+- Added bounded readiness/version probes, atomic validated upstream switching, standby restoration, interrupted-cutover recovery, status and safe image cleanup. Singleton worker handoff uses stop-before-start, shared role locks, heartbeat health and graceful draining. Existing notifications and opt-ins remain configured; verification did not enqueue mail or ingestion work.
+- Dedicated forced-command SSH key and all four production environment secrets are provisioned. Repaired a discovered CRLF failure in the existing backup timer; a fresh verified dump succeeded on October 12. Operations and expand-contract schema requirements are in `docs/blue-green-deployment.md`; no schema change was added.
+- Validation: full local suite 905 passed with expected platform/opt-in skips; production CI's Linux 3.12 suite passed 928 tests with 84.72% coverage, alongside Windows/other Python versions, browser and service checks. Latest probe/shutdown regressions pass; Linux controller failure/recovery/cleanup simulations pass. Ruff/Black/ShellCheck/actionlint/Compose and real staged Nginx validation pass; public HTTPS/feed/CORS/auth/WebSocket/SSE and rollback pass. Follow-up hardening handles digest-only cleanup references and PostgreSQL initialization readiness.
+- Remaining operator choices: default-branch protection/review policy and off-server backup storage (DEPLOY-002). Request-abuse/provider rollout remains separate in DEPLOY-ABUSE-001.
 ### API-ABUSE-001 Protect authentication, refreshes and live feeds
 
 - Completed: configurable Redis IP/global/verified-UID token buckets, pre-routing admission and private quota-before-SQL dependencies, deadline-bound owned resources/diagnostics, shared expiring stream leases, protected disconnect cleanup, inbound message/slow-send bounds, CORS-safe reference caching and stable cooldown responses. API defaults off; enabled enforcement fails closed on Redis outages.

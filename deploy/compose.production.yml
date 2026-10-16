@@ -89,7 +89,7 @@ services:
     profiles: ["evidence"]
     env_file: [/etc/jobping/backend.env]
     volumes:
-      - /etc/jobping/evidence:/etc/jobping/evidence:ro
+      - /etc/jobping/evidence:/run/jobping-evidence:ro
     command: ["python", "-m", "app.cli", "evidence-worker"]
     restart: unless-stopped
     init: true

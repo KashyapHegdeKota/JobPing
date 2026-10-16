@@ -1,0 +1,22 @@
+services:
+  api:
+    image: ${JOBPING_IMAGE:?immutable image required}
+    network_mode: host
+    env_file: ["${JOBPING_ENV_FILE:-/etc/jobping/backend.env}"]
+    environment:
+      APP_COLOR: ${JOBPING_COLOR:?color required}
+    command: ["uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "${JOBPING_PORT:?port required}", "--workers", "1", "--proxy-headers", "--forwarded-allow-ips", "127.0.0.1", "--ws-max-size", "4096", "--ws-max-queue", "8", "--backlog", "128", "--timeout-graceful-shutdown", "60"]
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 75s
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: ["ALL"]
+    volumes: ["${JOBPING_FIREBASE_DIR:-/etc/jobping/firebase}:/run/jobping:ro"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${JOBPING_PORT}/api/v1/health', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    logging:
+      options: {max-size: "10m", max-file: "3"}

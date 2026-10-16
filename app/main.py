@@ -179,6 +179,9 @@ def create_app(
         allow_headers=["*"],
         expose_headers=["Retry-After"],
     )
+    from app.api.deployment import router as deployment_router
+
+    application.include_router(deployment_router)
     application.include_router(api_v1_router)
 
     @application.exception_handler(RequestValidationError)

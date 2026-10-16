@@ -1,5 +1,10 @@
 # Oracle VM production deployment
 
+The current release system is described in [blue-green deployment](blue-green-deployment.md).
+Use its status/deploy/rollback controller for routine releases. The historical
+single-project commands below describe the original launch and shared services;
+do not recreate its API/scheduler/notifications after worker/color adoption.
+
 The backend runs at `https://api.jobping.website` on the Oracle Ubuntu ARM64 VM
 `137.131.24.56`, alongside its existing applications. The Vercel frontend uses
 `NEXT_PUBLIC_API_URL=https://api.jobping.website` in Production and Preview.

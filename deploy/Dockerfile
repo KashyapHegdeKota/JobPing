@@ -1,11 +1,17 @@
 FROM python:3.12-slim
 
+ARG APP_GIT_SHA=unknown
+ENV APP_GIT_SHA=$APP_GIT_SHA
+LABEL org.opencontainers.image.revision=$APP_GIT_SHA \
+      org.opencontainers.image.source=https://github.com/KashyapHegdeKota/JobPing
+
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 POETRY_VIRTUALENVS_CREATE=false
 WORKDIR /opt/jobping
 RUN pip install --no-cache-dir poetry==2.4.1
 COPY pyproject.toml poetry.lock README.md ./
 RUN poetry install --only main --no-root --no-interaction --no-ansi
 COPY app ./app
+COPY deploy ./deploy
 COPY alembic ./alembic
 COPY alembic.ini ./
 COPY examples/ats_sources.tech_companies.json ./examples/ats_sources.tech_companies.json

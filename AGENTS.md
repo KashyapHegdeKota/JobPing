@@ -229,6 +229,23 @@ the source/image under `/etc/jobping`; never upload local candidate files. Boots
 imports suppress notifications, and the worker profile remains opt-in. See
 `docs/deployment.md` for backups and rollout operations.
 
+Blue-green deployment uses `deploy/compose.api.yml` in `jobping-blue`/`jobping-green`
+projects on loopback 8001/8002. Existing `jobping` PostgreSQL/Redis containers and
+volumes remain shared; `compose.infra.yml` preserves their names. Nginx/Certbot
+uses the atomic `jobping_backend` upstream include. CI gates native ARM64 image
+verification/publication and SSH on every required test job; production runs
+deploy SHA-labeled images pinned by digest. `/ready` probes bounded SQL/Redis
+connectivity and the listener; `/version` verifies actual proxy cutover.
+`/api/v1/health` remains the sole loopback quota bypass and cheap Docker probe.
+Root-owned release controllers under `/srv/jobping/releases/<sha>` use flock,
+failure restoration, a persistent pending journal and explicit recover/rollback.
+Never downgrade the database automatically; all release migrations must remain
+compatible with both colors. `jobping-workers` performs stop-before-start handoff
+after verified traffic cutover, with fixed container names, shared singleton
+locks, bounded SIGTERM draining and heartbeat checks. Retain the previous API
+for rollback and WebSocket/SSE draining, and restore its image on a failed attempt
+to reuse that color. Restricted deployment SSH keys are production code authority.
+
 Close every owned `httpx.AsyncClient`, Redis client, SQLAlchemy engine, Playwright page/context/browser, and background listener deterministically (`async with` or `finally`). Do not close injected resources. HTTP clients should use explicit timeouts and `follow_redirects=True` where redirects are expected. Never swallow JSON/Pydantic mapping errors; log useful source context without payload secrets.
 
 On Windows, CLI async entry points use `app.cli._asyncio_run`, which selects a `SelectorEventLoop` for psycopg compatibility. Avoid module-level async clients or resources bound to a prior `asyncio.run()` loop; construct and close them inside the active async lifecycle. Console output must tolerate legacy encodings.

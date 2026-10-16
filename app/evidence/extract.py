@@ -99,7 +99,16 @@ def extract(document: Document) -> tuple[dict, list[dict]]:
                         value = "conditional"
                 if value == "unknown":
                     continue
-                is_future = bool(re.search(r"\bfuture\b", line, re.I))
+                is_future = bool(
+                    re.search(
+                        r"\bfuture\s+(?:visa\s+)?sponsorship\b|"
+                        r"\bsponsorship\s+(?:(?:is|will|be|not|available|provided|offered|"
+                        r"supported|now|or|and|currently|either|both)\s+){0,14}"
+                        r"in\s+(?:the\s+)?future\b",
+                        line,
+                        re.I,
+                    )
+                )
                 if key == "sponsorship" and is_future:
                     matches.setdefault("future_sponsorship", []).append((value, evidence))
                     spans.append(

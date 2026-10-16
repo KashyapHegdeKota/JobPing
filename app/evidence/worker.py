@@ -142,6 +142,7 @@ def reviewed_employers() -> dict[str, str]:
 
 
 async def serve(*, once: bool = False) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     if os.environ.get("EVIDENCE_WORKER_ENABLED", "false").lower() != "true":
         logger.info("evidence.worker disabled")
         return

@@ -48,6 +48,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
 
+@app.get("/health")
+async def health() -> dict[str, str]:
+    if not app.state.browser.is_connected():
+        raise HTTPException(503, "Browser unavailable")
+    return {"status": "ok"}
+
+
 @app.post("/render")
 async def render(body: RenderRequest) -> dict:
     async with app.state.lock:

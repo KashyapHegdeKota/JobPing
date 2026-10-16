@@ -8,7 +8,7 @@ import os
 import httpx
 import pytest
 from app.evidence.fetch import Fetcher
-from app.evidence.renderer import RenderRequest, app, lifespan, render
+from app.evidence.renderer import RenderRequest, app, health, lifespan, render
 
 pytestmark = pytest.mark.browser_e2e
 
@@ -33,6 +33,7 @@ async def test_renderer_reads_labels_without_filling_or_submission() -> None:
         return httpx.Response(200, text=html, headers={"content-type": "text/html"})
 
     async with lifespan(app):
+        assert await health() == {"status": "ok"}
         async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
             app.state.fetcher = Fetcher(client)
             result = await render(RenderRequest(url="https://fixture.example/role"))

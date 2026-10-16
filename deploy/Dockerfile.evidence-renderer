@@ -5,6 +5,8 @@ COPY deploy/renderer_requirements.py ./
 RUN python renderer_requirements.py poetry.lock > requirements.txt
 
 FROM python:3.12-slim
+ARG VCS_REF=unknown
+LABEL org.opencontainers.image.revision=$VCS_REF
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PLAYWRIGHT_BROWSERS_PATH=/opt/browsers
 WORKDIR /opt/jobping
 COPY --from=requirements /tmp/requirements/requirements.txt ./

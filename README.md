@@ -1,5 +1,11 @@
 # JobPing
 
+Production releases use CI-gated blue-green APIs on the Oracle VM. Merging a PR
+into the default branch (`master`, with `main` also supported) runs the full CI
+matrix, verifies one ARM64 image, publishes its SHA tag, and deploys its exact
+digest to the inactive color. See [deployment operations](docs/blue-green-deployment.md)
+for status, rollback, recovery and one-time setup.
+
 ## Production hosting
 
 The Oracle VM backend serves `https://api.jobping.website`; the Vercel frontend is
