@@ -83,6 +83,40 @@ services:
     profiles: ["notifications"]
     command: ["python", "-m", "app.cli", "notifications-worker"]
 
+  evidence:
+    image: jobping-backend:local
+    network_mode: host
+    profiles: ["evidence"]
+    env_file: [/etc/jobping/backend.env]
+    volumes:
+      - /etc/jobping/evidence:/etc/jobping/evidence:ro
+    command: ["python", "-m", "app.cli", "evidence-worker"]
+    restart: unless-stopped
+    init: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 512m
+    logging:
+      options: {max-size: 10m, max-file: "3"}
+    depends_on:
+      postgres: {condition: service_healthy}
+
+  evidence-renderer:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.evidence-renderer
+    profiles: ["evidence"]
+    ports: ["127.0.0.1:8031:8031"]
+    restart: unless-stopped
+    init: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    mem_limit: 1g
+    pids_limit: 256
+    shm_size: 256m
+    logging:
+      options: {max-size: 10m, max-file: "3"}
+
 volumes:
   postgres_data:
   redis_data:
