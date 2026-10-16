@@ -6,7 +6,14 @@
 
 ## In Progress
 
-No in-progress backlog items.
+### DISCOVERY-CHECK-001 Check sponsorship and base pay before applying
+
+- Resumed and completed local sponsorship/salary extraction and adapter fixes on October 16, 2026. Implementation and validation checkpoints are recorded in `docs/evidence-implementation-handoff.md`.
+- Implemented occurrence snapshots, fenced durable checks, deterministic screening, private account requirements, HTTP/rendering adapters and coordinated flagged UI.
+- Fixed contrastive-clause splitting (`but`, `however`, `although`, `though`, `while`, `whereas`), adverbial/direct sponsorship negations (`do not currently offer`, `cannot sponsor`, `without visa sponsorship`, `requiring visa sponsorship are not eligible`), non-immigration `sponsor` exclusions (`executive sponsor`, `event sponsor`), spelled-out US state and unambiguous US metro recognition, Greenhouse degree/metro `pay_input_ranges` labels (`Hourly Bachelors Pay`, `SF Bay Area Hourly Rate`), Stripe `careers-listing-details__body` scoping, branded Greenhouse wrapper fallback when `boards-api.greenhouse.io` is already verified, target-fenced ingestion merge protection in `_merge_job_details`, bounded status counts in `evidence.heartbeat`, and Compose `/etc/jobping/evidence` volume mounting.
+- Extends DISCOVERY-DETAILS-001; email matching and ingestion identity stay unchanged.
+- Latest validation: 129 passed across unit/integration evidence and job-details suites (including SQLite/PostgreSQL parity, adapters, worker, persistence and APIs); Ruff and Black pass; 50-posting shadow corpus replay yields 15 verified salary matches (Waymo, Databricks, Figma, Stripe), 27 conservative review outcomes, and 0 unsupported positives; UI 150 tests across 33 files, ESLint and TypeScript checks pass.
+- Remaining: operator ARM64 production image rollout and staged flag activation (`EVIDENCE_WORKER_ENABLED`, `NEXT_PUBLIC_SCREENING_ENABLED`). Nothing deployed.
 
 ## Ready
 
@@ -57,6 +64,43 @@ No blocked backlog items.
 - Copy encrypted/protected database backups to independently hosted storage; current verified daily 14-day dumps reside on the same VM. Retain encryption keys separately.
 
 ## Recently Completed
+
+### LOCAL-DISK-001 Diagnose laptop storage and build a local disk map
+
+- Completed outside the application in this chat's external visualization workspace,
+  under `disk-explorer`: standard-library metadata scanner, read-only loopback UI,
+  full folder drill-down/name search, largest files, review candidates and access gaps.
+- Scanned the laptop's fixed C: drive: 2,486,644 files and 474,800 directories;
+  Windows reported 98.2% used. Major consumers include Hugging Face cache (67.8 GiB),
+  Docker/WSL/VirtualBox disks (80.2 GiB), Recycle Bin (16.8 GiB), pip/npm caches (18.2 GiB).
+- Eight isolated tests, Ruff/Black, JavaScript syntax and live browser navigation/search
+  checks pass. SQLite integrity and all folder byte rollups pass. 3,739 skipped/unreadable
+  entries are explicit; allocation estimates and Windows volume usage remain distinct.
+- No cleanup, cloud publication, database/service changes or JobPing application edits.
+  The inventory stays local; a launcher and rescan instructions are included.
+
+### AUTH-REMEMBER-001 Remember returning signed-in users
+
+- Completed locally in sibling UI-AUTH-002: Google/email sign-in and sign-up
+  explicitly persist sessions across browser restarts and multi-day returns.
+  Homepage/workspace recognize restored accounts before offering login;
+  returning users get account/feed links and explicit sign-out remains available.
+- Firebase manages persistence and token refresh with no automatic two-day
+  logout. Backend verified/revoked-token checks remain intact; no API, schema,
+  provider settings or account preferences changed. Frontend production rollout
+  verified October 13: merged UI PR #26, revision `49c0296`, successful Vercel
+  Production deployment `7051619660`; jobping.website responds HTTP 200.
+- Validation: 146 UI tests, lint, standalone types and production build pass.
+  Real SDK/mocked HTTP regression restores a session three days later, refreshes
+  its expired token and verifies sign-out survives another restart.
+- Backend full default suite passes (954 passed, 30 opt-in skips); full Ruff,
+  Black and diff checks pass. Initial standard-temp-root fixture errors required
+  a fresh gitignored private test directory for the successful isolated rerun.
+- Published from isolated `codex/remember-login` checkouts in [frontend PR #26](https://github.com/KashyapHegdeKota/JobPing-ui/pull/26)
+  and [backend backlog PR #44](https://github.com/KashyapHegdeKota/JobPing/pull/44).
+  UI PR #26 is merged and its CI/security/Vercel checks pass; production deployment
+  succeeded. Backend PR #44 contains documentation only.
+  Original working-tree edits, including paused screening work, are preserved locally.
 
 ### API-ABUSE-001 Protect authentication, refreshes and live feeds
 

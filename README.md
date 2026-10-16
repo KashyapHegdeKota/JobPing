@@ -21,6 +21,20 @@ Apply the latest migration before restarting services. See
 [evidence, history import and rollout guide](docs/international-students-and-pay.md)
 for official CSV/JSON imports, source limitations and API filters.
 
+## Check before applying
+
+An optional evidence worker checks public employer postings and application instructions
+before applying. Verified users can save private sponsorship and base-pay requirements,
+then browse Matches, Needs review and Does not meet requirements. Salary matching uses
+the advertised maximum; an actual offer may be lower. Unknown evidence remains visible.
+Enable the independent worker/UI flags only after migration and acceptance checks. See
+[setup, limits and rollout](docs/pre-application-evidence.md).
+
+```text
+poetry run python -m app.cli evidence-worker --once
+poetry run python -m app.cli evidence-worker
+```
+
 ## Analytics
 
 Signed-in users can view their own activity, filter usage, matching occurrences and

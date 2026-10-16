@@ -77,6 +77,24 @@ Advertised currency/period remain original, and Greenhouse cents alone do not
 establish a period. Minimum-pay SQL filters compare lower bounds with matching
 currency/period. See `docs/international-students-and-pay.md` for rollout/imports.
 
+## Pre-application public evidence
+
+`app/evidence/` owns occurrence-scoped public snapshots, fenced checks, deterministic
+screening and private account requirements (migration `23aa3593570b`). Queue writes
+commit with ingestion; the independent worker performs all source fetching. Never
+fetch in feed requests or create discovery/notification events from enrichment.
+Only current complete role documents establish screening facts. Questions, company
+history and contextual policies never grant a positive role match. Greenhouse range
+labels may establish units, but cents alone cannot. Personalized pay uses maximum
+bounds; the legacy public minimum-pay filter still uses lower bounds. Keep SQL/Python
+policy parity, source spans, removed-statement withdrawal and separate verification
+timestamps. Reposts start separate evidence; stale worker/target writes must be rejected.
+Profiles use verified server identities and never enter analytics, logs or public URLs.
+The secret-free renderer fulfills read-only browser GETs through the public pinned-IP
+transport; block writes, WebSockets, service workers and private destinations. Do not
+add filling, upload, login, verification bypass or submission to this subsystem.
+Worker and frontend flags default off. See `docs/pre-application-evidence.md`.
+
 ## Email notifications
 
 `app/notifications/` owns opt-in Resend delivery and Firebase-verified preferences.
