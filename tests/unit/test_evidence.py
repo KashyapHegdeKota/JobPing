@@ -365,3 +365,36 @@ async def test_greenhouse_questions_and_hosted_page_are_read_only() -> None:
     assert all("secret" not in item.text for item in docs)
     facts = reconcile([(item, extract(item)[0]) for item in docs])
     assert facts["policies"]["future_sponsorship"]["value"] == "denied"
+
+
+def test_contrastive_clauses_preserve_independent_policy_polarity_and_spans() -> None:
+    text = (
+        "We do not currently offer visa sponsorship, but we accept OPT candidates. "
+        "We may offer future visa sponsorship, however we accept CPT."
+    )
+    doc = document(text, location="San Francisco, California")
+    facts, spans = extract(doc)
+    assert facts["policies"]["sponsorship"]["value"] == "denied"
+    assert facts["policies"]["opt"]["value"] == "allowed"
+    assert facts["policies"]["future_sponsorship"]["value"] == "conditional"
+    assert facts["policies"]["cpt"]["value"] == "allowed"
+    for span in spans:
+        assert doc.text[span["start"] : span["end"]] == span["quote"]
+
+
+def test_spelled_out_us_state_establishes_us_role_and_location_match() -> None:
+    doc = document(
+        "Please note that this is an hourly position with a pay rate of $60 per hour.",
+        location="San Francisco, California",
+    )
+    data = projection(reconcile([(doc, extract(doc)[0])]), "San Francisco, California")
+    assert data["us_role"] is True
+    result = evaluate(
+        Requirements(internship_hourly=Decimal(50), locations=["San Francisco, California"]),
+        data,
+        kind="internship",
+        status="complete",
+        verified_at=NOW,
+        now=NOW,
+    )
+    assert result["bucket"] == "matches"

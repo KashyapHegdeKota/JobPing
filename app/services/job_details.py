@@ -45,11 +45,62 @@ def plain_description(value: object) -> str:
     return "".join(parser.parts)
 
 
+US_STATES = (
+    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT "
+    "NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC"
+).split()
+US_STATE_NAMES = (
+    "Alabama|Alaska|Arizona|Arkansas|California|Colorado|Connecticut|Delaware|Florida|"
+    "Georgia|Hawaii|Idaho|Illinois|Indiana|Iowa|Kansas|Kentucky|Louisiana|Maine|Maryland|"
+    "Massachusetts|Michigan|Minnesota|Mississippi|Missouri|Montana|Nebraska|Nevada|"
+    "New Hampshire|New Jersey|New Mexico|New York|North Carolina|North Dakota|Ohio|"
+    "Oklahoma|Oregon|Pennsylvania|Rhode Island|South Carolina|South Dakota|Tennessee|"
+    "Texas|Utah|Vermont|Virginia|Washington|West Virginia|Wisconsin|Wyoming|"
+    "District of Columbia"
+)
+US_METROS = (
+    "San Francisco|South San Francisco|SF Bay Area|Bay Area|Silicon Valley|Mountain View|"
+    "Palo Alto|Sunnyvale|Santa Clara|Cupertino|Menlo Park|Redwood City|San Jose|"
+    "Seattle|Bellevue|Redmond|New York City|NYC"
+)
+_US = re.compile(
+    r"\b(?:USA|U\.?S\.?|United States|"
+    + US_STATE_NAMES
+    + r"|"
+    + US_METROS
+    + r")\b|,\s*(?:"
+    + "|".join(US_STATES)
+    + r")\b",
+    re.I,
+)
+_FOREIGN = re.compile(
+    r"\b(?:Canada|Canadian|Toronto|Vancouver|Montreal|Montr[eé]al|Ottawa|Waterloo|Calgary|"
+    r"Ontario|Quebec|Qu[eé]bec|British Columbia|Alberta|"
+    r"UK|United Kingdom|England|Scotland|London|Cambridge|Oxford|Edinburgh|"
+    r"Ireland|Dublin|Germany|Berlin|Munich|France|Paris|Netherlands|Amsterdam|"
+    r"Poland|Warsaw|Serbia|Belgrade|Denmark|Aarhus|Copenhagen|Sweden|Stockholm|"
+    r"Switzerland|Zurich|Spain|Madrid|Barcelona|Italy|Milan|Rome|Tbilisi|"
+    r"India|Bengaluru|Bangalore|Hyderabad|Mumbai|Pune|Delhi|Gurgaon|Chennai|"
+    r"Australia|Sydney|Melbourne|Singapore|Mexico|China|Beijing|Shanghai|"
+    r"Japan|Tokyo|Korea|Seoul|Brazil|Israel|Tel Aviv|Taiwan|Taipei)\b"
+    r"|,\s*(?:BC|ON|QC|AB)\b",
+    re.I,
+)
+
+
+def us_location(value: str | None) -> bool:
+    return bool(_US.search(value or "")) and not bool(_FOREIGN.search(value or ""))
+
+
 _TERMS = {
     "cpt": r"\bCPT\b|curricular practical training",
     "opt": r"(?<!STEM )(?<!STEM-)\bOPT\b|(?<!STEM )optional practical training",
-    "stem_opt": r"\bSTEM[- ]OPT\b",
-    "sponsorship": r"\b(?:visa |immigration |H[- ]?1B )?sponsorship\b|\bsponsor(?:ing)?\b",
+    "stem_opt": r"\bSTEM[- ]OPT\b|STEM optional practical training",
+    "sponsorship": (
+        r"\b(?:visa |immigration |work |employment |H[- ]?1B )?sponsorship\b"
+        r"|\bsponsor(?:ing|ed)?\b(?=[^.;]{0,35}\b(?:visa|visas|H[- ]?1B|work|immigration|"
+        r"employment|candidates?|applicants?|students?|status|role|position)\b)"
+    ),
 }
 _CONDITIONAL = re.compile(r"\b(?:may|might|case.by.case|consider|depending|subject to)\b", re.I)
 _PAY = re.compile(
@@ -65,19 +116,29 @@ _PAY = re.compile(
 def _policy_value(line: str, term: str) -> str:
     topic = f"(?:{term})"
     negative = (
-        rf"\b(?:do not|does not|will not|cannot|can't|unable to|not able to)\s+"
-        rf"(?:accept|support|hire|offer|provide|sponsor)\b[^.;]{{0,70}}{topic}"
-        rf"|\b(?:must not|do not|cannot)\s+(?:require|need)\b[^.;]{{0,40}}{topic}"
-        rf"|\bnot eligible for\s+{topic}"
-        rf"|\bno\s+(?:visa |immigration |H[- ]?1B )?{topic}"
-        rf"|{topic}[^.;]{{0,30}}\b(?:not accepted|not eligible|not available|"
-        rf"not supported|ineligible|unavailable|not permitted)\b"
+        rf"\b(?:do not|does not|did not|will not|won't|cannot|can't|unable to|not able to)\s+"
+        rf"(?:currently\s+|presently\s+|be able to\s+)?"
+        rf"(?:accept|support|hire|offer|provide|consider|extend|sponsor)\b[^.;]{{0,70}}{topic}"
+        rf"|\b(?:do not|does not|did not|will not|won't|cannot|can't|unable to|not able to)\s+"
+        rf"(?:currently\s+|presently\s+|be able to\s+)?{topic}"
+        rf"|\b(?:must not|do not|does not|cannot|can't|will not)\s+"
+        rf"(?:currently\s+)?(?:require|need)\b[^.;]{{0,50}}{topic}"
+        rf"|\bwithout\s+(?:requiring\s+|needing\s+|current or future\s+|employer\s+)?{topic}"
+        rf"|\bnot\s+(?:currently\s+)?(?:eligible|available|offered|provided|supported|"
+        rf"accepted|permitted)\s+for\b[^.;]{{0,40}}{topic}"
+        rf"|\bno\s+(?:current or future\s+)?"
+        rf"(?:visa |immigration |work |employment |H[- ]?1B )?{topic}"
+        rf"|{topic}[^.;]{{0,40}}\b(?:is\s+|are\s+|will\s+be\s+)?(?:not accepted|not eligible|"
+        rf"not available|not supported|not offered|not provided|ineligible|unavailable|"
+        rf"not permitted)\b"
+        rf"|\b(?:require|requiring|need|needing)\b[^.;]{{0,30}}{topic}\s+"
+        rf"(?:are|is|will be)\s+(?:not eligible|ineligible|not considered)\b"
     )
     positive = (
         rf"\b(?:accept|accepts|welcome|support|supports|offer|offers|provide|provides)"
         rf"\b[^.;]{{0,60}}{topic}|{topic}[^.;]{{0,35}}\b"
         rf"(?:welcome|eligible|accepted|available|supported|permitted)\b"
-        rf"|\b(?:can|will)\s+{topic}"
+        rf"|\b(?:can|will)\s+(?:currently\s+)?{topic}"
     )
     if re.search(negative, line, re.I):
         return "denied"
@@ -109,7 +170,11 @@ def extract_job_details(raw: RawJobPayload) -> JobDetails | None:
     policies: dict = {}
     for key, term in _TERMS.items():
         matches: list[tuple[str, Evidence]] = []
-        for line in re.split(r"[\n;]|(?<=[.!])\s+|\s+but\s+", text, flags=re.I):
+        for line in re.split(
+            r"[\n;]|(?<=[.!])\s+|,?\s+\b(?:but|however|although|though|while|whereas)\b\s+",
+            text,
+            flags=re.I,
+        ):
             line = " ".join(line.split())[:1500]
             if not line or "?" in line or not re.search(term, line, re.I):
                 continue
@@ -173,7 +238,7 @@ def extract_job_details(raw: RawJobPayload) -> JobDetails | None:
             )
         except ValidationError:
             pass
-    # Greenhouse amounts are cents, but its API does not provide the pay period.
+    # Greenhouse amounts are cents; only explicit unit words in title/blurb establish the period.
     for item in (
         payload.get("pay_input_ranges", [])
         if isinstance(payload.get("pay_input_ranges"), list)
@@ -181,6 +246,34 @@ def extract_job_details(raw: RawJobPayload) -> JobDetails | None:
     ):
         if not isinstance(item, dict):
             continue
+        label = str(item.get("title") or "")
+        blurb = plain_description(item.get("blurb"))
+        unit_text = label + "\n" + blurb
+        periods = {
+            period
+            for word, period in [
+                ("hourly", "hour"),
+                ("annual", "year"),
+                ("monthly", "month"),
+                ("weekly", "week"),
+            ]
+            if re.search(
+                r"\b" + word + r"\s+(?:(?:base|bachelors?|masters?|phd|intern(?:ship)?)\s+)*"
+                r"(?:salary|pay|rate|wage)\b",
+                unit_text,
+                re.I,
+            )
+        }
+        period = next(iter(periods)) if len(periods) == 1 else "unknown"
+        generic_label = bool(
+            re.fullmatch(
+                r"(?:[\s:,-]*(?:annual|hourly|monthly|weekly|local|base|salary|pay|wage|rate|"
+                r"range|internship|intern|bachelors?|masters?|phd|new grad|graduate|"
+                r"entry level|compensation)+[\s:,-]*)+",
+                label,
+                re.I,
+            )
+        )
         try:
             pay.append(
                 CompensationRange(
@@ -189,9 +282,9 @@ def extract_job_details(raw: RawJobPayload) -> JobDetails | None:
                     minimum=_cents(item.get("min_cents")),
                     maximum=_cents(item.get("max_cents")),
                     currency=item.get("currency_type"),
-                    interval="unknown",
-                    location=item.get("title"),
-                    component="unspecified",
+                    interval=period,
+                    location=_location(raw) if generic_label else item.get("title"),
+                    component="base" if period != "unknown" else "unspecified",
                 )
             )
         except (ValidationError, InvalidOperation, TypeError):
@@ -207,10 +300,7 @@ def extract_job_details(raw: RawJobPayload) -> JobDetails | None:
                     match["currency"].upper(), match["currency"].upper()
                 )
                 if currency == "$":
-                    if not re.search(
-                        r"\b(?:US|USA|United States)\b",
-                        _location(raw) or "",
-                    ):
+                    if not us_location(_location(raw)):
                         continue
                     currency = "USD"
                 try:

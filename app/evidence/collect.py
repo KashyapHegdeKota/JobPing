@@ -25,6 +25,7 @@ ROLE_CLASSES = {
     "job__description",
     "job__pay-ranges",
     "application--form",
+    "careers-listing-details__body",
 }
 ROLE_SELECTOR = ",".join(
     [
@@ -332,13 +333,36 @@ class Collector:
                         ("monthly", "month"),
                         ("weekly", "week"),
                     ]
-                    if re.search(r"\b" + word + r"\s+base\s+(?:salary|pay|rate)\b", unit_text, re.I)
+                    if re.search(
+                        r"\b"
+                        + word
+                        + r"\s+(?:(?:base|bachelors?|masters?|phd|intern(?:ship)?)\s+)*"
+                        r"(?:salary|pay|rate|wage)\b",
+                        unit_text,
+                        re.I,
+                    )
                 }
                 period = next(iter(periods)) if len(periods) == 1 else "unknown"
+                sales = bool(
+                    re.search(
+                        r"\b(?:account executive|sales|business development|bdr|sdr|"
+                        r"solutions? consultant)\b",
+                        str(target.get("title") or ""),
+                        re.I,
+                    )
+                )
+                ote = bool(
+                    re.search(
+                        r"\b(?:ote|on[- ]target|commission|variable|total target|incentive)\b",
+                        unit_text,
+                        re.I,
+                    )
+                )
                 generic_label = bool(
                     re.fullmatch(
-                        r"(?:Annual Base Salary Range:?|Hourly Base Pay Range:?|"
-                        r"Internship|Base Salary Range:?)",
+                        r"(?:[\s:,-]*(?:annual|hourly|monthly|weekly|local|base|salary|pay|"
+                        r"wage|rate|range|internship|intern|bachelors?|masters?|phd|"
+                        r"new grad|graduate|entry level|compensation)+[\s:,-]*)+",
                         label,
                         re.I,
                     )
@@ -364,7 +388,14 @@ class Collector:
                         ),
                         "currency": item.get("currency_type"),
                         "interval": period,
-                        "component": "base" if period != "unknown" else "unspecified",
+                        "component": (
+                            "base"
+                            if period != "unknown"
+                            and (
+                                bool(re.search(r"\bbase\b", unit_text, re.I)) or not (sales and ote)
+                            )
+                            else "unspecified"
+                        ),
                         "location": target["location"] if generic_label else item.get("title"),
                         "excerpt": excerpt,
                     }
@@ -397,10 +428,32 @@ class Collector:
                 )
             )
             if provider == "greenhouse":
+                question_items = [
+                    *(body.get("questions") if isinstance(body.get("questions"), list) else []),
+                    *(
+                        body.get("location_questions")
+                        if isinstance(body.get("location_questions"), list)
+                        else []
+                    ),
+                    *(
+                        question
+                        for section in (
+                            body.get("compliance")
+                            if isinstance(body.get("compliance"), list)
+                            else []
+                        )
+                        if isinstance(section, dict)
+                        for question in (
+                            section.get("questions")
+                            if isinstance(section.get("questions"), list)
+                            else []
+                        )
+                    ),
+                ]
                 labels = [
                     prose(item.get("label"))
-                    for item in body.get("questions", [])
-                    if isinstance(item, dict)
+                    for item in question_items
+                    if isinstance(item, dict) and item.get("label")
                 ]
                 documents[0].text += "\n" + "\n".join("Question: " + label for label in labels)
             page_url = hosted if provider == "greenhouse" else body.get("applyUrl") or hosted
@@ -411,7 +464,17 @@ class Collector:
             page_url = target["url"]
             if not verified_url(page_url, target, self.reviewed):
                 raise FetchError("employer_not_reviewed")
-        page = await self.fetcher.get(page_url)
+        branded_greenhouse = (
+            provider == "greenhouse"
+            and role_identity(page_url) != (namespace, target.get("external_id"))
+            and bool(documents and len(documents[0].text) >= 100)
+        )
+        try:
+            page = await self.fetcher.get(page_url)
+        except FetchError as exc:
+            if branded_greenhouse and str(exc) in {"http_unavailable", "transport_unavailable"}:
+                return documents
+            raise
         expected_host = (urlsplit(page_url).hostname or "").lower()
         same_role = (
             role_identity(page.url) == (namespace, target.get("external_id"))
@@ -460,6 +523,8 @@ class Collector:
         if self.barrier(text):
             raise FetchError("verification_barrier")
         if len(text) < 100:
+            if branded_greenhouse:
+                return documents
             raise FetchError("role_scope_unverified")
         pay = []
         for item in parser.structured:

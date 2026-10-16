@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -13,25 +12,11 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.api.v1.jobs import _array_rows
 from app.db.models import EvidenceCheck, JobPosting
 from app.evidence.schemas import VERSION, Requirements
-
-US_STATES = (
-    "AL AK AZ AR CA CO CT DE FL GA HI ID IL IN IA KS KY LA ME MD MA MI MN MS MO MT "
-    "NE NV NH NJ NM NY NC ND OH OK OR PA RI SC SD TN TX UT VT VA WA WV WI WY DC"
-).split()
-_US = re.compile(r"\b(?:USA|U\.?S\.?|United States)\b|,\s*(?:" + "|".join(US_STATES) + r")\b", re.I)
-_FOREIGN = re.compile(
-    r"\b(?:Canada|Canadian|UK|United Kingdom|London|Toronto|Vancouver|India|Germany|France|"
-    r"Australia|Singapore|Mexico|China|Japan)\b",
-    re.I,
-)
+from app.services.job_details import us_location
 
 
 def location_key(value: str | None) -> str:
     return " ".join((value or "").casefold().split())
-
-
-def us_location(value: str | None) -> bool:
-    return bool(_US.search(value or "")) and not bool(_FOREIGN.search(value or ""))
 
 
 def utc(value: datetime) -> datetime:

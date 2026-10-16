@@ -105,15 +105,24 @@ class EvidenceWorker:
                     raise result
                 logger.error("evidence.check failed type=%s", type(result).__name__)
         async with self.sessions() as session:
-            queued = await session.scalar(
-                select(func.count())
-                .select_from(EvidenceCheck)
-                .where(EvidenceCheck.status == "queued")
-            )
+            rows = (
+                await session.execute(
+                    select(EvidenceCheck.status, func.count()).group_by(EvidenceCheck.status)
+                )
+            ).all()
+            counts = {str(status): int(count) for status, count in rows}
+            queued = counts.get("queued", 0)
             oldest = await session.scalar(
                 select(func.min(EvidenceCheck.requested_at)).where(EvidenceCheck.status == "queued")
             )
-            logger.info("evidence.heartbeat queued=%s oldest=%s", queued, oldest)
+            logger.info(
+                "evidence.heartbeat queued=%s complete=%s partial=%s failed=%s oldest=%s",
+                queued,
+                counts.get("complete", 0),
+                counts.get("partial", 0),
+                counts.get("failed", 0),
+                oldest,
+            )
 
 
 def reviewed_employers() -> dict[str, str]:

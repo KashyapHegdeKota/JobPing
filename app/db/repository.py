@@ -1322,7 +1322,13 @@ class DatabaseRepository:
             from app.db.models import EvidenceCheck
 
             check = await self._session.get(EvidenceCheck, occurrence.id)
-            if check and check.projection is not None and check.target["url"] == posting.apply_url:
+            if (
+                check
+                and check.verified_at is not None
+                and check.target["url"] == posting.apply_url
+                and check.target["location"] == posting.location
+                and check.target.get("title") == posting.title
+            ):
                 return False
         previous = posting.details
         merged = merge_details(occurrence.details, observation.details)

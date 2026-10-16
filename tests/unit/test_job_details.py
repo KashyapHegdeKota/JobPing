@@ -193,3 +193,48 @@ def test_future_policy_is_derived_from_future_statement_only() -> None:
     )
     assert details.policies["sponsorship"].value == "conflicting"
     assert details.policies["future_sponsorship"].value == "denied"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "We do not currently offer visa sponsorship for this role.",
+        "We cannot sponsor H-1B visas for this position.",
+        "Candidates must be authorized to work in the US without visa sponsorship.",
+        "Applicants requiring visa sponsorship are not eligible for this role.",
+        "This position is not eligible for employment visa sponsorship.",
+    ],
+)
+def test_adverbial_and_eligibility_sponsorship_negations(text: str) -> None:
+    details = extract_job_details(row(text))
+    assert details is not None
+    assert details.policies["sponsorship"].value == "denied"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "You will partner with an executive sponsor on key engineering initiatives.",
+        "Our company is a proud event sponsor for local university hackathons.",
+    ],
+)
+def test_non_immigration_sponsor_mentions_are_ignored(text: str) -> None:
+    assert extract_job_details(row(text)) is None
+
+
+def test_spelled_out_us_state_and_multi_country_currency_handling() -> None:
+    us_details = extract_job_details(
+        row("Base pay: $54-$60 per hour", location="San Francisco, California")
+    )
+    assert us_details is not None
+    assert us_details.compensation[0].currency == "USD"
+    assert us_details.compensation[0].component == "base"
+    assert (
+        extract_job_details(
+            row(
+                "Base pay: $54-$60 per hour",
+                location="San Francisco, California; Vancouver, Canada",
+            )
+        )
+        is None
+    )

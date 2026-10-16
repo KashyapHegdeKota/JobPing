@@ -60,7 +60,10 @@ async def test_generic_facts_belong_only_to_exact_structured_role(wrong: str | N
             assert facts["policies"]["sponsorship"]["value"] == "denied"
 
 
-@pytest.mark.parametrize("scope", ['id="content"', 'class="job__description body"'])
+@pytest.mark.parametrize(
+    "scope",
+    ['id="content"', 'class="job__description body"', 'class="careers-listing-details__body"'],
+)
 def test_known_ats_scope_excludes_recommendations_and_page_chrome(scope: str) -> None:
     from app.evidence.collect import PublicHTML
 
@@ -75,15 +78,27 @@ def test_known_ats_scope_excludes_recommendations_and_page_chrome(scope: str) ->
 
 
 @pytest.mark.parametrize(
-    "label,blurb,expected",
+    "label,blurb,expected,expected_location",
     [
-        ("Annual Base Salary Range:", "", "year"),
-        ("Internship", "This role has the hourly base pay rate stated below.", "hour"),
-        ("Internship", "Benefits include an annual bonus.", "unknown"),
+        ("Annual Base Salary Range:", "", "year", "Austin, TX, US"),
+        (
+            "Internship",
+            "This role has the hourly base pay rate stated below.",
+            "hour",
+            "Austin, TX, US",
+        ),
+        (
+            "Hourly Bachelors Pay",
+            "The expected hourly rate for this position is listed below.",
+            "hour",
+            "Austin, TX, US",
+        ),
+        ("SF Bay Area Hourly Rate", "Pay Range Transparency", "hour", "SF Bay Area Hourly Rate"),
+        ("Internship", "Benefits include an annual bonus.", "unknown", "Austin, TX, US"),
     ],
 )
 async def test_greenhouse_attached_units_and_branded_redirect(
-    label: str, blurb: str, expected: str
+    label: str, blurb: str, expected: str, expected_location: str
 ) -> None:
     target = {
         "url": "https://employer.example/jobs?gh_jid=123",
@@ -129,8 +144,51 @@ async def test_greenhouse_attached_units_and_branded_redirect(
     assert result["compensation"][0]["interval"] == expected
     if expected != "unknown":
         assert result["compensation"][0]["component"] == "base"
-        assert result["compensation"][0]["location"] == target["location"]
+        assert result["compensation"][0]["location"] == expected_location
     assert all(doc.observed_at <= datetime.now(UTC) for doc in docs)
+
+
+async def test_branded_greenhouse_shell_falls_back_to_verified_api_document() -> None:
+    target = {
+        "url": "https://employer.example/careers/job?gh_jid=123",
+        "namespace": "greenhouse:fixture",
+        "external_id": "123",
+        "company": "Fixture",
+        "location": "San Francisco, California",
+    }
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "boards-api.greenhouse.io":
+            return httpx.Response(
+                200,
+                json={
+                    "id": 123,
+                    "absolute_url": target["url"],
+                    "content": "<p>" + "Verified Greenhouse role description. " * 6 + "</p>",
+                    "questions": [],
+                    "pay_input_ranges": [
+                        {
+                            "title": "SF Bay Area Hourly Rate",
+                            "blurb": "Pay Range Transparency",
+                            "min_cents": 5400,
+                            "max_cents": 6000,
+                            "currency_type": "USD",
+                        }
+                    ],
+                },
+            )
+        return httpx.Response(
+            200,
+            text='<div id="___gatsby"><nav>Site navigation</nav></div>',
+            headers={"content-type": "text/html"},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        docs = await Collector(Fetcher(client)).collect(target)
+    assert len(docs) == 1
+    result = reconcile([(item, extract(item)[0]) for item in docs])
+    assert result["compensation"][0]["interval"] == "hour"
+    assert result["compensation"][0]["component"] == "base"
 
 
 async def test_redirect_to_different_requisition_is_rejected() -> None:

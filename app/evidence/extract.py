@@ -10,7 +10,13 @@ from pydantic import ValidationError
 from app.evidence.schemas import Document
 from app.schemas.job import RawJobPayload
 from app.schemas.job_details import CompensationRange, Evidence, JobDetails, PolicyFact
-from app.services.job_details import _TERMS, _amount, _policy_value, extract_job_details
+from app.services.job_details import (
+    _TERMS,
+    _amount,
+    _policy_value,
+    extract_job_details,
+    us_location,
+)
 
 _PREFIX_PAY = re.compile(
     r"(?P<period>annual|yearly|hourly|monthly|weekly)\s+(?P<us>US\s+)?"
@@ -20,6 +26,10 @@ _PREFIX_PAY = re.compile(
     r"(?:(?:[-–—]|to)\s*(?:USD|CAD|EUR|GBP|US\$|CA\$|\$|€|£)?\s*"
     r"(?P<max>\d[\d,]*(?:\.\d{1,2})?k?))?",
     re.I,
+)
+_CLAUSE = re.compile(
+    r"(?:(?!,?\s+\b(?:but|however|although|though|while|whereas)\b\s+).)+",
+    re.I | re.S,
 )
 
 
@@ -41,10 +51,9 @@ def extract(document: Document) -> tuple[dict, list[dict]]:
     spans: list[dict] = []
     matches: dict[str, list[tuple[str, dict]]] = {}
     scan = re.sub(r"U\.S\.", "US  ", document.text)
-    for match in re.finditer(r"[^\n;.!?]+(?:[.!?]|$)", scan):
-        original = document.text[match.start() : match.end()]
-        line_start = scan.rfind("\n", 0, match.start()) + 1
-        line_end = scan.find("\n", match.start())
+    for sentence in re.finditer(r"[^\n;.!?]+(?:[.!?]|$)", scan):
+        line_start = scan.rfind("\n", 0, sentence.start()) + 1
+        line_end = scan.find("\n", sentence.start())
         context = scan[line_start : line_end if line_end >= 0 else len(scan)]
         if re.search(
             r"please select|choose an option|if yes|not applicable", context, re.I
@@ -60,90 +69,98 @@ def extract(document: Document) -> tuple[dict, list[dict]]:
             re.I,
         ):
             continue
-        line = match.group().strip()
-        if not line or line.endswith("?") or len(line) > 1500:
+        whole = sentence.group().strip()
+        if not whole or whole.endswith("?") or len(whole) > 1500:
             continue
-        evidence = Evidence(
-            source=document.source,
-            source_url=document.final_url,
-            excerpt=original.strip(),
-            observed_at=document.observed_at,
-        ).model_dump(mode="json")
-        for key, term in _TERMS.items():
-            if not re.search(term, line, re.I):
+        for clause in _CLAUSE.finditer(sentence.group()):
+            start = sentence.start() + clause.start()
+            end = sentence.start() + clause.end()
+            original = document.text[start:end]
+            line = clause.group().strip()
+            if not line or line.endswith("?"):
                 continue
-            value = _policy_value(line, term)
-            # Statements about referrals, events, or sponsorship questions are not policy.
-            if re.search(
-                r"\b(?:if|unless|except|depending|subject to|may|might|case.by.case)\b", line, re.I
-            ):
-                if value != "unknown":
-                    value = "conditional"
-            if value == "unknown":
-                continue
-            is_future = bool(
-                re.search(
-                    r"\bfuture\s+(?:visa\s+)?sponsorship\b|"
-                    r"\bsponsorship\s+(?:(?:is|will|be|not|available|provided|offered|"
-                    r"supported|now|or|and|currently|either|both)\s+){0,14}"
-                    r"in\s+(?:the\s+)?future\b",
+            evidence = Evidence(
+                source=document.source,
+                source_url=document.final_url,
+                excerpt=original.strip(),
+                observed_at=document.observed_at,
+            ).model_dump(mode="json")
+            for key, term in _TERMS.items():
+                if not re.search(term, line, re.I):
+                    continue
+                value = _policy_value(line, term)
+                # Statements about referrals, events, or sponsorship questions are not policy.
+                if re.search(
+                    r"\b(?:if|unless|except|depending|subject to|may|might|case.by.case)\b",
                     line,
                     re.I,
-                )
-            )
-            if key == "sponsorship" and is_future:
-                matches.setdefault("future_sponsorship", []).append((value, evidence))
-                spans.append(
-                    {
-                        "start": match.start(),
-                        "end": match.end(),
-                        "field": "future_sponsorship",
-                        "quote": original,
-                    }
-                )
-                # A future-only restriction does not deny current support.
-                if not re.search(r"\bnow\b|\bcurrently\b|\bat any time\b", line, re.I):
+                ):
+                    if value != "unknown":
+                        value = "conditional"
+                if value == "unknown":
                     continue
-            matches.setdefault(key, []).append((value, evidence))
-            spans.append(
-                {"start": match.start(), "end": match.end(), "field": key, "quote": original}
-            )
-        restrictions = {
-            "citizenship_required": (
-                r"\b(?:must be|requires?|only|restricted to)\s+(?:a\s+)?"
-                r"(?:U\.?S\.?|United States)\s+citizens?\b"
-            ),
-            "permanent_authorization_required": (
-                r"\b(?:must have|requires?|only)\s+"
-                r"(?:unrestricted|permanent)\s+"
-                r"(?:U\.?S\.?\s+)?work authorization\b"
-            ),
-        }
-        for key, pattern in restrictions.items():
-            if re.search(pattern, line, re.I):
-                restriction = {
-                    "value": (
-                        "conditional"
-                        if re.search(
-                            r"\b(?:if|unless|except|depending|subject to|may|might|case.by.case)\b",
-                            line,
-                            re.I,
-                        )
-                        else "required"
-                    ),
-                    "evidence": [evidence],
-                }
-                facts["restrictions"][key] = _merge_restriction(
-                    facts["restrictions"].get(key), restriction
+                is_future = bool(
+                    re.search(
+                        r"\bfuture\s+(?:visa\s+)?sponsorship\b|"
+                        r"\bsponsorship\s+(?:(?:is|will|be|not|available|provided|offered|"
+                        r"supported|now|or|and|currently|either|both)\s+){0,14}"
+                        r"in\s+(?:the\s+)?future\b",
+                        line,
+                        re.I,
+                    )
                 )
-                spans.append(
-                    {
-                        "start": match.start(),
-                        "end": match.end(),
-                        "field": key,
-                        "quote": original,
+                if key == "sponsorship" and is_future:
+                    matches.setdefault("future_sponsorship", []).append((value, evidence))
+                    spans.append(
+                        {
+                            "start": start,
+                            "end": end,
+                            "field": "future_sponsorship",
+                            "quote": original,
+                        }
+                    )
+                    # A future-only restriction does not deny current support.
+                    if not re.search(r"\bnow\b|\bcurrently\b|\bat any time\b", line, re.I):
+                        continue
+                matches.setdefault(key, []).append((value, evidence))
+                spans.append({"start": start, "end": end, "field": key, "quote": original})
+            restrictions = {
+                "citizenship_required": (
+                    r"\b(?:must be|requires?|only|restricted to)\s+(?:a\s+)?"
+                    r"(?:U\.?S\.?|United States)\s+citizens?\b"
+                ),
+                "permanent_authorization_required": (
+                    r"\b(?:must have|requires?|only)\s+"
+                    r"(?:unrestricted|permanent)\s+"
+                    r"(?:U\.?S\.?\s+)?work authorization\b"
+                ),
+            }
+            for key, pattern in restrictions.items():
+                if re.search(pattern, line, re.I):
+                    restriction = {
+                        "value": (
+                            "conditional"
+                            if re.search(
+                                r"\b(?:if|unless|except|depending|subject to|may|might|"
+                                r"case.by.case)\b",
+                                line,
+                                re.I,
+                            )
+                            else "required"
+                        ),
+                        "evidence": [evidence],
                     }
-                )
+                    facts["restrictions"][key] = _merge_restriction(
+                        facts["restrictions"].get(key), restriction
+                    )
+                    spans.append(
+                        {
+                            "start": start,
+                            "end": end,
+                            "field": key,
+                            "quote": original,
+                        }
+                    )
     for key, values in matches.items():
         states = {value for value, _ in values}
         facts["policies"][key] = {
@@ -165,9 +182,7 @@ def extract(document: Document) -> tuple[dict, list[dict]]:
         currency = {"$": "USD", "US$": "USD", "CA$": "CAD", "€": "EUR", "£": "GBP"}.get(
             match["currency"].upper(), match["currency"].upper()
         )
-        if match["currency"] == "$" and not (
-            match["us"] or re.search(r"\b(?:US|USA|United States)\b", document.location or "")
-        ):
+        if match["currency"] == "$" and not (match["us"] or us_location(document.location)):
             continue
         paragraph_start = document.text.rfind("\n", 0, match.start()) + 1
         paragraph_end = document.text.find("\n", match.end())
@@ -199,7 +214,11 @@ def extract(document: Document) -> tuple[dict, list[dict]]:
                         "weekly": "week",
                     }[match["period"].lower()],
                     component=component,
-                    location="United States" if match["us"] else document.location,
+                    location=(
+                        document.location
+                        if us_location(document.location)
+                        else ("United States" if match["us"] else document.location)
+                    ),
                 )
             )
             if component == "unspecified":
@@ -214,7 +233,7 @@ def extract(document: Document) -> tuple[dict, list[dict]]:
             pay.component = (
                 "total" if re.search(r"total compensation|OTE", line, re.I) else "unspecified"
             )
-        elif re.search(r"\b(?:base|salary|hourly pay|wage|hourly rate)\b", line, re.I):
+        elif re.search(r"\b(?:base|salary|hourly pay|pay rate|wage|hourly rate)\b", line, re.I):
             pay.component = "base"
         # Explicit lower/upper bound notation must not become a fixed amount.
         if re.search(r"\b(?:up to|maximum)\b", line, re.I) and pay.minimum == pay.maximum:
@@ -225,11 +244,69 @@ def extract(document: Document) -> tuple[dict, list[dict]]:
         ):
             pay.maximum = None
         pay.source = document.source
+    role_title = str(document.role_identity.get("title") or "")
+    sales = bool(
+        re.search(
+            r"\b(?:account executive|sales|business development|bdr|sdr|solutions? consultant)\b",
+            role_title,
+            re.I,
+        )
+    )
     structured: list[CompensationRange] = []
     for item in document.structured_pay:
         excerpt = item.get("excerpt")
         if not isinstance(excerpt, str) or not excerpt or excerpt not in document.text:
             continue
+        interval = item.get("interval", "unknown")
+        component = item.get("component", "unspecified")
+        location = item.get("location") or document.location
+        if interval == "unknown" and excerpt.startswith("{") and "title" in excerpt:
+            import json
+
+            try:
+                raw_range = json.loads(excerpt)
+            except ValueError:
+                raw_range = None
+            if isinstance(raw_range, dict):
+                label = str(raw_range.get("title") or "")
+                blurb = str(raw_range.get("blurb") or "")
+                unit_text = label + "\n" + blurb
+                periods = {
+                    period
+                    for word, period in [
+                        ("hourly", "hour"),
+                        ("annual", "year"),
+                        ("monthly", "month"),
+                        ("weekly", "week"),
+                    ]
+                    if re.search(
+                        r"\b"
+                        + word
+                        + r"\s+(?:(?:base|bachelors?|masters?|phd|intern(?:ship)?)\s+)*"
+                        r"(?:salary|pay|rate|wage)\b",
+                        unit_text,
+                        re.I,
+                    )
+                }
+                if len(periods) == 1:
+                    interval = next(iter(periods))
+                    ote = bool(
+                        re.search(
+                            r"\b(?:ote|on[- ]target|commission|variable|total target|incentive)\b",
+                            unit_text,
+                            re.I,
+                        )
+                    )
+                    if bool(re.search(r"\bbase\b", unit_text, re.I)) or not (sales and ote):
+                        component = "base"
+                if re.fullmatch(
+                    r"(?:[\s:,-]*(?:annual|hourly|monthly|weekly|local|base|salary|pay|wage|"
+                    r"rate|range|internship|intern|bachelors?|masters?|phd|new grad|graduate|"
+                    r"entry level|compensation)+[\s:,-]*)+",
+                    label,
+                    re.I,
+                ):
+                    location = document.location
         try:
             structured.append(
                 CompensationRange(
@@ -240,9 +317,9 @@ def extract(document: Document) -> tuple[dict, list[dict]]:
                     minimum=item.get("minimum"),
                     maximum=item.get("maximum"),
                     currency=item["currency"],
-                    interval=item.get("interval", "unknown"),
-                    component=item.get("component", "unspecified"),
-                    location=item.get("location") or document.location,
+                    interval=interval,
+                    component=component,
+                    location=location,
                 )
             )
         except (ValidationError, KeyError, InvalidOperation):
