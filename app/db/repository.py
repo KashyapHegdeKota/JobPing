@@ -320,7 +320,14 @@ class DatabaseRepository:
             await self._record_source_observations(
                 [(existing, current_occurrence, observation_job)]
             )
-            details_changed = self._merge_job_details(existing, current_occurrence, observation_job)
+            details_changed = await self._merge_job_details(
+                existing, current_occurrence, observation_job
+            )
+            await self._enqueue_evidence(
+                existing,
+                current_occurrence,
+                observation=observation_job,
+            )
             if event_row is not None:
                 await self._record_discovery_rows([event_row])
             if self._publisher is not None and (was_created or changed or details_changed):
@@ -1082,8 +1089,13 @@ class DatabaseRepository:
                         observation_jobs_by_hash[posting.base_hash],
                     )
                 )
-                details_changed = self._merge_job_details(
+                details_changed = await self._merge_job_details(
                     posting, current_occurrence, observation_jobs_by_hash[posting.base_hash]
+                )
+                await self._enqueue_evidence(
+                    posting,
+                    current_occurrence,
+                    observation=observation_jobs_by_hash[posting.base_hash],
                 )
                 was_changed = old is not None and any(
                     old[key] != getattr(posting, key) for key in old if key != "location_source"
@@ -1300,13 +1312,24 @@ class DatabaseRepository:
             insert(DiscoveryEvent).values(list(rows)).on_conflict_do_nothing()
         )
 
-    @staticmethod
-    def _merge_job_details(
-        posting: JobPosting, occurrence: JobOccurrence, observation: NormalizedJob
+    async def _merge_job_details(
+        self, posting: JobPosting, occurrence: JobOccurrence, observation: NormalizedJob
     ) -> bool:
         # Ambiguous open observations cannot replace a confirmed closed snapshot.
         if occurrence.closed_at is not None and not observation.is_closed:
             return False
+        if os.environ.get("EVIDENCE_WORKER_ENABLED", "false").lower() == "true":
+            from app.db.models import EvidenceCheck
+
+            check = await self._session.get(EvidenceCheck, occurrence.id)
+            if (
+                check
+                and check.verified_at is not None
+                and check.target["url"] == posting.apply_url
+                and check.target["location"] == posting.location
+                and check.target.get("title") == posting.title
+            ):
+                return False
         previous = posting.details
         merged = merge_details(occurrence.details, observation.details)
         if occurrence.details != merged:
@@ -1341,6 +1364,24 @@ class DatabaseRepository:
                 },
             }
         )
+
+    async def _enqueue_evidence(
+        self, posting: JobPosting, occurrence: JobOccurrence, *, observation: NormalizedJob
+    ) -> None:
+        # Queue writes commit with ingestion; workers only see committed rows.
+        if os.environ.get("EVIDENCE_WORKER_ENABLED", "false").lower() == "true":
+            from app.evidence.store import enqueue
+
+            await enqueue(
+                self._session,
+                posting,
+                occurrence,
+                datetime.now(UTC),
+                observation_source=observation.source,
+                observation_details=(
+                    observation.details.model_dump(mode="json") if observation.details else None
+                ),
+            )
 
     async def log_status_change(
         self, job_id: int, previous_state: str | None, new_state: str
