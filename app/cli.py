@@ -36,9 +36,12 @@ from app.scrapers.github_client import GitHubClient
 from app.services.db_audit import AuditReport, DatabaseAuditService
 from app.services.deduplicator import DeduplicationState, JobDeduplicator
 from app.services.employer_history import (
+    DEFAULT_DOL_SOURCE_URL,
     import_employer_history,
+    infer_fiscal_year,
     load_employer_history,
     parse_official_csv,
+    prepare_dol_directory,
 )
 from app.trackers.cli import app as trackers_app
 
@@ -52,25 +55,63 @@ SIMPLIFY_REPOSITORIES = ("Summer2027-Internships", "New-Grad-Positions")
 APPLYGUY_FEEDS = (ApplyGuyFeed.INTERNSHIPS, ApplyGuyFeed.NEW_GRAD)
 
 
+def _load_company_list(path: Path) -> list[str]:
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(raw, list):
+        raise ValueError("Invalid companies list")
+    names: list[str] = []
+    for item in raw:
+        if isinstance(item, str):
+            names.append(item)
+        elif isinstance(item, dict) and isinstance(item.get("name"), str):
+            names.append(item["name"])
+        else:
+            raise ValueError("Invalid companies list")
+    return names
+
+
 @app.command("prepare-employer-history")
 def prepare_employer_history(
     csv_file: Path,
     aliases_file: Path,
     output: Path,
-    provider: Literal["dol", "uscis"],
-    year: Annotated[int, typer.Option(min=2000, max=2100)],
-    source_url: str,
+    provider: Annotated[Literal["dol", "uscis"], typer.Argument()] = "dol",
+    year: Annotated[int | None, typer.Option(min=2000, max=2100)] = None,
+    source_url: Annotated[str, typer.Argument()] = DEFAULT_DOL_SOURCE_URL,
+    companies_file: Annotated[
+        Path | None,
+        typer.Option(
+            "--companies-file",
+            help="JSON list of JobPing company names for deterministic legal-suffix matching.",
+        ),
+    ] = None,
 ) -> None:
-    """Convert an official CSV export using a reviewed legal-name mapping JSON."""
+    """Convert an official CSV/XLSX export or directory using reviewed legal-name mappings."""
     try:
         aliases = json.loads(aliases_file.read_text(encoding="utf-8"))
         if not isinstance(aliases, dict) or any(
             not isinstance(key, str) or not isinstance(value, str) for key, value in aliases.items()
         ):
             raise ValueError("Invalid alias mapping")
-        data = parse_official_csv(
-            csv_file, provider=provider, year=year, source_url=source_url, aliases=aliases
-        )
+        companies = _load_company_list(companies_file) if companies_file is not None else None
+        if csv_file.is_dir():
+            if provider != "dol":
+                raise ValueError("Directory batch preparation is only supported for DOL exports")
+            data = prepare_dol_directory(
+                csv_file, aliases=aliases, companies=companies, source_url=source_url
+            )
+        else:
+            resolved_year = year or infer_fiscal_year(csv_file)
+            if resolved_year is None:
+                raise ValueError("Fiscal year is required when not inferable from filename")
+            data = parse_official_csv(
+                csv_file,
+                provider=provider,
+                year=resolved_year,
+                source_url=source_url,
+                aliases=aliases,
+                companies=companies,
+            )
     except (ValueError, OSError):
         typer.echo("Invalid CSV export or mapping; check the documented format.", err=True)
         raise typer.Exit(2) from None
