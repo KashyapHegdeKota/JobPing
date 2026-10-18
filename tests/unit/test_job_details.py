@@ -1,5 +1,6 @@
 """Conservative evidence, pay units, source authority and import contracts."""
 
+import zipfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -7,7 +8,13 @@ from pathlib import Path
 import pytest
 from app.schemas.job import RawJobPayload
 from app.schemas.job_details import EmployerRecord
-from app.services.employer_history import parse_official_csv
+from app.services.employer_history import (
+    canonical_company_key,
+    infer_fiscal_year,
+    match_company_aliases,
+    parse_official_csv,
+    prepare_dol_directory,
+)
 from app.services.job_details import extract_job_details, merge_details
 from pydantic import ValidationError
 
@@ -158,6 +165,39 @@ def test_official_history_rejects_impostor_hosts() -> None:
     assert EmployerRecord(**record, source_url="https://www.uscis.gov/data").count == 5
 
 
+def _write_minimal_xlsx(path: Path, rows: list[list[str]]) -> None:
+    """Create a minimal valid OpenXML workbook with a sharedStrings table."""
+    shared: list[str] = []
+    shared_index: dict[str, int] = {}
+    for row in rows:
+        for cell in row:
+            if cell not in shared_index:
+                shared_index[cell] = len(shared)
+                shared.append(cell)
+
+    si_xml = "".join(f"<si><t>{val}</t></si>" for val in shared)
+    shared_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f"{si_xml}</sst>"
+    )
+    row_xml_parts: list[str] = []
+    for r_idx, row in enumerate(rows, start=1):
+        cells_xml = "".join(
+            f'<c r="{chr(64 + c_idx)}{r_idx}" t="s"><v>{shared_index[val]}</v></c>'
+            for c_idx, val in enumerate(row, start=1)
+        )
+        row_xml_parts.append(f'<row r="{r_idx}">{cells_xml}</row>')
+    sheet_xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>'
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+        f"<sheetData>{''.join(row_xml_parts)}</sheetData></worksheet>"
+    )
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("xl/sharedStrings.xml", shared_xml)
+        archive.writestr("xl/worksheets/sheet1.xml", sheet_xml)
+
+
 def test_dol_import_counts_distinct_h1b_cases_and_exact_entities(tmp_path: Path) -> None:
     path = tmp_path / "dol.csv"
     path.write_text(
@@ -177,6 +217,57 @@ def test_dol_import_counts_distinct_h1b_cases_and_exact_entities(tmp_path: Path)
     assert len(result.records) == 1
     assert result.records[0].record.count == 1
     assert result.records[0].record.kind == "h1b_filings"
+
+
+def test_fiscal_year_inference_and_deterministic_company_matching() -> None:
+    assert infer_fiscal_year(Path("H-1B_Disclosure_Data_FY16.xlsx")) == 2016
+    assert infer_fiscal_year(Path("H-1B_Disclosure_Data_FY2018_EOY.xlsx")) == 2018
+    assert infer_fiscal_year(Path("LCA_Disclosure_Data_FY2025_Q4.xlsx")) == 2025
+    assert infer_fiscal_year(Path("Unconfirmed 535428.crdownload")) is None
+
+    assert canonical_company_key("Stripe, Inc.") == "stripe"
+    assert canonical_company_key("STRIPE LLC") == "stripe"
+    assert canonical_company_key("Amazon Web Services, Inc.") == "amazon web services"
+
+    matched = match_company_aliases(
+        ["STRIPE, INC.", "STRIPE LLC", "STRIPE PAYMENTS COMPANY", "ACME HOLDINGS LLC"],
+        ["Stripe", "Acme"],
+        explicit_aliases={"ACME HOLDINGS LLC": "Acme"},
+    )
+    assert matched == {
+        "STRIPE, INC.": "Stripe",
+        "STRIPE LLC": "Stripe",
+        "ACME HOLDINGS LLC": "Acme",
+    }
+    assert "STRIPE PAYMENTS COMPANY" not in matched
+
+
+def test_prepare_dol_directory_aggregates_xlsx_and_uppercase_certified(tmp_path: Path) -> None:
+    fy16 = tmp_path / "H-1B_Disclosure_Data_FY16.xlsx"
+    _write_minimal_xlsx(
+        fy16,
+        [
+            ["CASE_NUMBER", "CASE_STATUS", "VISA_CLASS", "EMPLOYER_NAME"],
+            ["I-200-16001-000001", "CERTIFIED", "H-1B", "STRIPE, INC."],
+            ["I-200-16001-000001", "CERTIFIED", "H-1B", "STRIPE, INC."],
+            ["I-200-16001-000002", "CERTIFIED-WITHDRAWN", "H-1B", "STRIPE, INC."],
+        ],
+    )
+    fy25 = tmp_path / "LCA_Disclosure_Data_FY2025_Q4.xlsx"
+    _write_minimal_xlsx(
+        fy25,
+        [
+            ["CASE_NUMBER", "CASE_STATUS", "VISA_CLASS", "EMPLOYER_NAME"],
+            ["I-200-25001-000001", "Certified", "H-1B", "STRIPE, INC."],
+            ["I-200-25001-000002", "Certified", "H-1B", "STRIPE, INC."],
+            ["I-200-25001-000003", "Certified", "H-1B", "STRIPE SUBSIDIARY LLC"],
+        ],
+    )
+    result = prepare_dol_directory(tmp_path, companies=["Stripe"])
+    assert [(item.company, item.record.year, item.record.count) for item in result.records] == [
+        ("Stripe", 2016, 1),
+        ("Stripe", 2025, 2),
+    ]
 
 
 def test_canadian_location_does_not_assign_us_dollars() -> None:
