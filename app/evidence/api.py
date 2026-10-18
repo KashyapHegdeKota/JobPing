@@ -16,6 +16,7 @@ from sqlalchemy.orm import joinedload
 from app.api.deps import get_db
 from app.api.v1.jobs import _apply_filters
 from app.db.models import (
+    Company,
     EvidenceCheck,
     EvidenceDocument,
     JobOccurrence,
@@ -107,6 +108,7 @@ async def delete_profile(who: Who, db: DB, response: Response) -> dict:
 def screening(
     job: JobPosting, check: EvidenceCheck | None, profile: Requirements | None, now: datetime
 ) -> dict:
+    company = job.__dict__.get("company")
     return evaluate(
         profile,
         check.projection if check else None,
@@ -121,6 +123,7 @@ def screening(
             and check.target["location"] == job.location
             and check.target.get("title") == job.title
         ),
+        immigration_records=company.immigration_records if company is not None else None,
     )
 
 
@@ -188,6 +191,8 @@ async def request_check(job_id: int, who: Who, db: DB, response: Response) -> di
     job = await db.scalar(select(JobPosting).where(JobPosting.id == job_id).with_for_update())
     if not job:
         raise HTTPException(404, "Job not found")
+    if "company" not in job.__dict__ or job.company is None:
+        job.company = await db.get(Company, job.company_id)
     occurrence = await current_occurrence(db, job_id)
     if job.is_closed or not occurrence or occurrence.closed_at:
         raise HTTPException(409, "This occurrence is not open for applications")
