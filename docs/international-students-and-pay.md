@@ -61,23 +61,29 @@ or advertised vacancies. E-Verify history does not guarantee current enrollment 
 a particular hiring location; see the [official search caveats](https://www.e-verify.gov/sites/default/files/everify/E-VerifyEmployerSearchToolCaveats.pdf).
 
 Obtain exports from [DOL disclosure data](https://www.dol.gov/agencies/eta/foreign-labor/performance)
-or the official USCIS H-1B employer data hub. Export the required sheet to UTF-8 CSV
-when a government download is XLSX. Review a legal-name mapping such as
-`{"EXACT LEGAL EMPLOYER NAME": "Existing JobPing company name"}`. Unmapped entities
-are excluded. Never map a subsidiary to its parent simply because their brands
-are related.
+or the official USCIS H-1B employer data hub. `prepare-employer-history` accepts
+UTF-8 CSV files, official `.xlsx` workbooks directly, or a directory of multi-year
+DOL disclosure `.xlsx`/`.csv` files (inferring the fiscal year from filenames such
+as `H-1B_Disclosure_Data_FY16.xlsx` through `LCA_Disclosure_Data_FY2025_Q4.xlsx`).
+Review a legal-name mapping such as
+`{"EXACT LEGAL EMPLOYER NAME": "Existing JobPing company name"}` and/or supply
+`--companies-file` with a JSON list of existing JobPing company names to
+deterministically match exact legal-suffix variants (`Inc.`, `LLC`, `Corp.`, `Ltd.`).
+Unmapped entities and subsidiary qualifiers (`Web Services`, `Labs`, `America`,
+`Holdings`) are excluded unless explicitly mapped. Never map a subsidiary to its
+parent simply because their brands are related.
 
 ```text
 poetry run python -m app.cli prepare-employer-history private/lca.csv private/employer-aliases.json private/history.json dol https://www.dol.gov/agencies/eta/foreign-labor/performance --year 2026
+poetry run python -m app.cli prepare-employer-history C:\path\to\dol_h1b_data\raw private/employer-aliases.json private/history.json --companies-file private/companies.json
 poetry run python -m app.cli import-employer-history private/history.json --dry-run
 poetry run python -m app.cli import-employer-history private/history.json
 ```
 
-DOL CSV headers: `CASE_NUMBER,CASE_STATUS,VISA_CLASS,EMPLOYER_NAME`. Only certified
-H-1B cases count; duplicate case numbers count once. USCIS CSV headers:
+DOL CSV/XLSX headers: `CASE_NUMBER,CASE_STATUS,VISA_CLASS,EMPLOYER_NAME`. Only certified
+H-1B cases (`Certified` / `CERTIFIED`) count; duplicate case numbers count once per fiscal year. USCIS CSV headers:
 `FISCAL_YEAR,EMPLOYER_NAME,INITIAL_APPROVAL,CONTINUING_APPROVAL`. Initial and
-continuing approvals sum within the supplied year. Validate the export's reporting
-year before preparing DOL data; do not combine years in one import.
+continuing approvals sum within the supplied year.
 ICE/E-Verify observations use reviewed JSON instead of the CSV converter:
 
 ```json
