@@ -6,7 +6,19 @@ from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import JSON, Numeric, Select, case, cast, func, literal, select, type_coerce
+from sqlalchemy import (
+    JSON,
+    Numeric,
+    Select,
+    and_,
+    case,
+    cast,
+    func,
+    literal,
+    or_,
+    select,
+    type_coerce,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 from sqlalchemy.sql.elements import ColumnElement
@@ -69,10 +81,43 @@ def _discovery_filters(
     pay_interval: str,
 ) -> Select[tuple[JobPosting]]:
     if policy:
-        statement = statement.where(
-            func.coalesce(JobPosting.details["policies"][policy]["value"].as_string(), "unknown")
-            == policy_value
+        explicit_policy = func.coalesce(
+            JobPosting.details["policies"][policy]["value"].as_string(), "unknown"
         )
+        if policy in ("sponsorship", "future_sponsorship") and policy_value == "allowed":
+            spons_val = func.coalesce(
+                JobPosting.details["policies"]["sponsorship"]["value"].as_string(), "unknown"
+            )
+            future_val = func.coalesce(
+                JobPosting.details["policies"]["future_sponsorship"]["value"].as_string(), "unknown"
+            )
+            h1b_rows = _array_rows(Company.immigration_records, dialect, "policy_h1b_rows")
+            h1b_val = type_coerce(
+                cast(h1b_rows.c.value, JSON) if dialect == "postgresql" else h1b_rows.c.value,
+                JSON,
+            )
+            active_h1b_sponsor = (
+                select(1)
+                .select_from(h1b_rows)
+                .where(
+                    h1b_val["kind"].as_string().in_(["h1b_filings", "h1b_approvals"]),
+                    cast(h1b_val["year"].as_string(), Numeric) >= 2023,
+                    cast(h1b_val["count"].as_string(), Numeric) >= 1,
+                )
+                .exists()
+            )
+            statement = statement.where(
+                or_(
+                    explicit_policy == "allowed",
+                    and_(
+                        spons_val.in_(["unknown", "allowed"]),
+                        future_val.in_(["unknown", "allowed"]),
+                        active_h1b_sponsor,
+                    ),
+                )
+            )
+        else:
+            statement = statement.where(explicit_policy == policy_value)
     if h1b_history:
         rows = _array_rows(Company.immigration_records, dialect, "history_rows")
         value = type_coerce(rows.c.value, JSON)
