@@ -10,9 +10,31 @@ from sqlalchemy import JSON, Numeric, and_, case, cast, func, literal, or_, sele
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.api.v1.jobs import _array_rows
-from app.db.models import EvidenceCheck, JobPosting
+from app.db.models import Company, EvidenceCheck, JobPosting
 from app.evidence.schemas import VERSION, Requirements
 from app.services.job_details import us_location
+
+MIN_ACTIVE_H1B_YEAR = 2023
+
+
+def recent_h1b_summary(
+    records: list[dict] | None, *, min_year: int = MIN_ACTIVE_H1B_YEAR
+) -> tuple[int, int] | None:
+    """Return (total_filings, latest_year) if employer has certified H-1B filings in min_year+."""
+    if not records:
+        return None
+    valid = [
+        r
+        for r in records
+        if isinstance(r, dict)
+        and r.get("kind") in ("h1b_filings", "h1b_approvals")
+        and int(r.get("count") or 0) >= 1
+    ]
+    if not valid or not any(int(r.get("year") or 0) >= min_year for r in valid):
+        return None
+    total = sum(int(r["count"]) for r in valid)
+    latest = max(int(r["year"]) for r in valid)
+    return total, latest
 
 
 def location_key(value: str | None) -> str:
@@ -54,6 +76,7 @@ def evaluate(
     now: datetime,
     closed: bool = False,
     target_current: bool = True,
+    immigration_records: list[dict] | None = None,
 ) -> dict:
     data = data or {}
     if closed:
@@ -78,21 +101,47 @@ def evaluate(
     passes: list[str] = []
     policies = data.get("policies", {})
     restrictions = data.get("restrictions", {})
-    if profile.authorization and profile.authorization != "unrestricted":
+    needs_work_auth = bool(
+        (profile.authorization and profile.authorization != "unrestricted")
+        or profile.future_sponsorship
+    )
+    if needs_work_auth:
         if any(value.get("value") == "required" for value in restrictions.values()):
             fails.append("Employer requires citizenship or permanent authorization")
         if any(value.get("value") != "required" for value in restrictions.values()):
             reviews.append("Citizenship or permanent-authorization restrictions need review")
+    if profile.authorization and profile.authorization != "unrestricted":
         value = policies.get(profile.authorization, {}).get("value", "unknown")
         (passes if value == "allowed" else fails if value == "denied" else reviews).append(
             f"{profile.authorization.upper()}: "
             f"{value if value != 'unknown' else 'not stated on checked pages'}"
         )
     if profile.future_sponsorship:
-        value = policies.get("future_sponsorship", {}).get("value", "unknown")
-        (passes if value == "allowed" else fails if value == "denied" else reviews).append(
-            f"Future sponsorship: {value if value != 'unknown' else 'not stated on checked pages'}"
-        )
+        future_val = policies.get("future_sponsorship", {}).get("value", "unknown")
+        spons_val = policies.get("sponsorship", {}).get("value", "unknown")
+        has_restriction = bool(restrictions)
+        if future_val == "allowed" or (
+            future_val == "unknown" and spons_val == "allowed" and not has_restriction
+        ):
+            passes.append("Future sponsorship: allowed")
+        elif future_val == "denied" or (future_val == "unknown" and spons_val == "denied"):
+            fails.append("Future sponsorship: denied")
+        elif (
+            future_val == "unknown"
+            and spons_val == "unknown"
+            and not has_restriction
+            and (h1b := recent_h1b_summary(immigration_records)) is not None
+        ):
+            total_filings, latest_year = h1b
+            noun = "petition" if total_filings == 1 else "petitions"
+            passes.append(
+                f"Future sponsorship: supported by official DOL H-1B filings "
+                f"(Filed {total_filings:,} H-1B {noun}, last filed {latest_year})"
+            )
+        else:
+            label = future_val if future_val != "unknown" else spons_val
+            text = label if label != "unknown" else "not stated on checked pages"
+            reviews.append(f"Future sponsorship: {text}")
     accepted = {location_key(value) for value in profile.locations}
     if accepted and data.get("location_key") not in accepted:
         reviews.append("Confirm that a listed work location is acceptable")
@@ -127,6 +176,30 @@ def evaluate(
     }
 
 
+def _company_has_recent_h1b(
+    dialect: str, min_year: int = MIN_ACTIVE_H1B_YEAR
+) -> ColumnElement[bool]:
+    rows = _array_rows(Company.immigration_records, dialect, "screen_h1b_rows")
+    rec = type_coerce(cast(rows.c.value, JSON) if dialect == "postgresql" else rows.c.value, JSON)
+    return (
+        select(1)
+        .select_from(Company)
+        .where(
+            Company.id == JobPosting.company_id,
+            select(1)
+            .select_from(rows)
+            .where(
+                rec["kind"].as_string().in_(["h1b_filings", "h1b_approvals"]),
+                cast(rec["year"].as_string(), Numeric) >= min_year,
+                cast(rec["count"].as_string(), Numeric) >= 1,
+            )
+            .exists(),
+        )
+        .correlate(JobPosting)
+        .exists()
+    )
+
+
 def bucket_expression(
     profile: Requirements | None, *, dialect: str, now: datetime
 ) -> ColumnElement[str]:
@@ -145,7 +218,11 @@ def bucket_expression(
     )
     failures: list[Any] = []
     reviews: list[Any] = []
-    if profile.authorization and profile.authorization != "unrestricted":
+    needs_work_auth = bool(
+        (profile.authorization and profile.authorization != "unrestricted")
+        or profile.future_sponsorship
+    )
+    if needs_work_auth:
         failures.append(
             or_(
                 data["restrictions"]["citizenship_required"]["value"].as_string() == "required",
@@ -153,20 +230,43 @@ def bucket_expression(
                 == "required",
             )
         )
+        for key in ("citizenship_required", "permanent_authorization_required"):
+            restriction = data["restrictions"][key]["value"].as_string()
+            reviews.append(and_(restriction.is_not(None), restriction != "required"))
+    if profile.authorization and profile.authorization != "unrestricted":
         value = func.coalesce(
             data["policies"][profile.authorization]["value"].as_string(), "unknown"
         )
         failures.append(value == "denied")
         reviews.append(value.not_in(["allowed", "denied"]))
-        for key in ("citizenship_required", "permanent_authorization_required"):
-            restriction = data["restrictions"][key]["value"].as_string()
-            reviews.append(and_(restriction.is_not(None), restriction != "required"))
     if profile.future_sponsorship:
-        value = func.coalesce(
+        future_val = func.coalesce(
             data["policies"]["future_sponsorship"]["value"].as_string(), "unknown"
         )
-        failures.append(value == "denied")
-        reviews.append(value.not_in(["allowed", "denied"]))
+        spons_val = func.coalesce(data["policies"]["sponsorship"]["value"].as_string(), "unknown")
+        has_restriction = or_(
+            data["restrictions"]["citizenship_required"]["value"].as_string().is_not(None),
+            data["restrictions"]["permanent_authorization_required"]["value"]
+            .as_string()
+            .is_not(None),
+        )
+        future_failed = or_(
+            future_val == "denied",
+            and_(future_val == "unknown", spons_val == "denied"),
+        )
+        future_satisfied = or_(
+            future_val == "allowed",
+            and_(
+                future_val == "unknown",
+                ~has_restriction,
+                or_(
+                    spons_val == "allowed",
+                    and_(spons_val == "unknown", _company_has_recent_h1b(dialect)),
+                ),
+            ),
+        )
+        failures.append(future_failed)
+        reviews.append(and_(~future_failed, ~future_satisfied))
     accepted = [location_key(value) for value in profile.locations]
     if accepted:
         reviews.append(func.coalesce(data["location_key"].as_string(), "").not_in(accepted))
