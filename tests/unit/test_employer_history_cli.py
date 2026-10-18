@@ -41,3 +41,39 @@ def test_official_csv_prepare_then_dry_run(tmp_path: Path) -> None:
     result = runner.invoke(app, ["import-employer-history", str(output), "--dry-run"])
     assert result.exit_code == 0, result.output
     assert "no writes" in result.output
+
+
+def test_directory_prepare_with_companies_file(tmp_path: Path) -> None:
+    raw_dir = tmp_path / "raw"
+    raw_dir.mkdir()
+    (raw_dir / "H-1B_Disclosure_Data_FY16.csv").write_text(
+        "CASE_NUMBER,CASE_STATUS,VISA_CLASS,EMPLOYER_NAME\n1,CERTIFIED,H-1B,STRIPE, INC.\n",
+        encoding="utf-8",
+    )
+    (raw_dir / "LCA_Disclosure_Data_FY2025_Q4.csv").write_text(
+        "CASE_NUMBER,CASE_STATUS,VISA_CLASS,EMPLOYER_NAME\n2,Certified,H-1B,STRIPE LLC\n",
+        encoding="utf-8",
+    )
+    aliases = tmp_path / "aliases.json"
+    companies = tmp_path / "companies.json"
+    output = tmp_path / "history.json"
+    aliases.write_text("{}", encoding="utf-8")
+    companies.write_text('["Stripe"]', encoding="utf-8")
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            "prepare-employer-history",
+            str(raw_dir),
+            str(aliases),
+            str(output),
+            "--companies-file",
+            str(companies),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert "Prepared 2 dated records" in result.output
+    result = runner.invoke(app, ["import-employer-history", str(output), "--dry-run"])
+    assert result.exit_code == 0, result.output
+    assert "Validated 2 employer history records" in result.output
