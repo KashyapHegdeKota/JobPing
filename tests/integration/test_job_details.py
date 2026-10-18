@@ -145,6 +145,13 @@ async def test_history_and_pay_filters_count_all_pages(
         unknown = await list_jobs(db, policy="opt", policy_value="unknown")
         assert unknown.total == 1 and unknown.items[0].title == "C"
         assert len(approved.items[0].company.immigration_records) == 1
+        sponsored = await list_jobs(db, policy="sponsorship")
+        assert sponsored.total == 3
+        await repo.bulk_upsert_job_postings(
+            [candidate("We cannot sponsor H-1B visas for this position.", title="D", identifier=4)]
+        )
+        sponsored_after_denial = await list_jobs(db, policy="sponsorship")
+        assert {item.title for item in sponsored_after_denial.items} == {"A", "B", "C"}
 
 
 def test_details_migration_roundtrip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

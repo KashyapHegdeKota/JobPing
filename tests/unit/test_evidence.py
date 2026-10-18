@@ -398,3 +398,54 @@ def test_spelled_out_us_state_establishes_us_role_and_location_match() -> None:
         now=NOW,
     )
     assert result["bucket"] == "matches"
+
+
+def test_dol_h1b_history_satisfies_future_sponsorship_when_role_has_no_denial() -> None:
+    empty_doc = document("Software Engineer role in Austin.", location="Austin, TX, US")
+    empty_data = projection(reconcile([(empty_doc, extract(empty_doc)[0])]), "Austin, TX, US")
+    recent_records = [
+        {"kind": "h1b_filings", "year": 2018, "count": 15},
+        {"kind": "h1b_filings", "year": 2025, "count": 35},
+    ]
+    stale_records = [{"kind": "h1b_filings", "year": 2019, "count": 20}]
+
+    matched = evaluate(
+        Requirements(future_sponsorship=True),
+        empty_data,
+        kind="new_grad",
+        status="complete",
+        verified_at=NOW,
+        now=NOW,
+        immigration_records=recent_records,
+    )
+    assert matched["bucket"] == "matches"
+    assert (
+        "Future sponsorship: supported by official DOL H-1B filings "
+        "(Filed 50 H-1B petitions, last filed 2025)" in matched["reasons"]
+    )
+
+    stale = evaluate(
+        Requirements(future_sponsorship=True),
+        empty_data,
+        kind="new_grad",
+        status="complete",
+        verified_at=NOW,
+        now=NOW,
+        immigration_records=stale_records,
+    )
+    assert stale["bucket"] == "review"
+
+    denied_doc = document(
+        "This position does not offer visa sponsorship.", location="Austin, TX, US"
+    )
+    denied_data = projection(reconcile([(denied_doc, extract(denied_doc)[0])]), "Austin, TX, US")
+    excluded = evaluate(
+        Requirements(future_sponsorship=True),
+        denied_data,
+        kind="new_grad",
+        status="complete",
+        verified_at=NOW,
+        now=NOW,
+        immigration_records=recent_records,
+    )
+    assert excluded["bucket"] == "excluded"

@@ -290,6 +290,52 @@ async def test_policy_location_and_target_bucket_parity(
             assert not (await evidence_view(db, posting, check))["fresh"]
 
 
+@pytest.mark.parametrize(
+    ("text", "year", "expected"),
+    [
+        ("Software Engineer in Austin.", 2025, "matches"),
+        ("Software Engineer in Austin.", 2019, "review"),
+        ("This position does not offer visa sponsorship.", 2025, "excluded"),
+        ("Candidates must be US citizens.", 2025, "excluded"),
+    ],
+)
+async def test_dol_h1b_future_sponsorship_sql_python_parity(
+    application_sessions: async_sessionmaker[AsyncSession],
+    application_job: NormalizedJob,
+    text: str,
+    year: int,
+    expected: str,
+) -> None:
+    from app.db.models import Company
+    from app.evidence.api import screening
+
+    async with application_sessions() as db, db.begin():
+        posting, occurrence = await seed(db, application_job)
+        company = await db.get(Company, posting.company_id)
+        assert company is not None
+        company.immigration_records = [
+            {
+                "kind": "h1b_filings",
+                "year": year,
+                "count": 25,
+                "employer_name": "ACME LLC",
+                "source_url": "https://www.dol.gov/data",
+                "observed_at": NOW.isoformat(),
+            }
+        ]
+        posting.company = company
+        check = await complete(db, posting, occurrence, text, NOW)
+        await db.flush()
+        profile = Requirements(future_sponsorship=True)
+        python = screening(posting, check, profile, NOW)
+        sql = await db.scalar(
+            select(bucket_expression(profile, dialect=db.get_bind().dialect.name, now=NOW))
+            .select_from(JobPosting)
+            .join(EvidenceCheck, EvidenceCheck.occurrence_id == occurrence.id)
+        )
+        assert python["bucket"] == sql == expected
+
+
 async def test_profile_ownership_no_input_echo_and_paginated_private_feed(
     application_sessions: async_sessionmaker[AsyncSession], application_job: NormalizedJob
 ) -> None:
